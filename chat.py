@@ -20,12 +20,7 @@ def main(page: ft.Page):
     def send_click(e):
         page.pubsub.send_all(Message(user=page.session.id, text=new_message.value))
         new_message.value = ""
-
-    # Adiciona a caixa de chat e o campo de texto para a nova mensagem
-    page.add(
-        chat,
-        ft.Row(controls=[new_message, ft.Button("Send", on_click=send_click)]),
-    )
-
+    
+    page.add(chat, ft.Row(controls=[new_message, ft.Button("Send", on_click=send_click)]))
 
 ft.run(main)
