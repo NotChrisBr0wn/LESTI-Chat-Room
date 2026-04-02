@@ -1,12 +1,24 @@
+from dataclasses import dataclass
 import flet as ft
 
+@dataclass
+class Message:
+    user: str
+    text: str
+    
 def main(page: ft.Page):
     chat = ft.Column()
     new_message = ft.TextField()
 
+    def on_message(message: Message):
+        chat.controls.append(ft.Text(f"{message.user}: {message.text}"))
+        page.update()
+        
+    page.pubsub.subscribe(on_message)
+
     # Envia a mensagem quando o botão send é carregado
     def send_click(e):
-        chat.controls.append(ft.Text(new_message.value))
+        page.pubsub.send_all(Message(user=page.session.id, text=new_message.value))
         new_message.value = ""
 
     # Adiciona a caixa de chat e o campo de texto para a nova mensagem
