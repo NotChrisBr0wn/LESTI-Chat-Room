@@ -8,7 +8,7 @@ class Message:  # noqa: B903
     user_name: str
     text: str
     message_type: str
-
+    room_name: str
 
 @ft.control
 class ChatMessage(ft.Row):
@@ -26,8 +26,12 @@ class ChatMessage(ft.Row):
                 tight=True,
                 spacing=5,
                 controls=[
-                    ft.Text(self.message.user_name, weight=ft.FontWeight.BOLD),
-                    ft.Text(self.message.text, selectable=True),
+                    ft.Text(
+                        self.message.user_name,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.GREEN_800,
+                    ),
+                    ft.Text(self.message.text, selectable=True, color=ft.Colors.WHITE_70),
                 ],
             ),
         ]
@@ -61,70 +65,292 @@ def main(page: ft.Page):
     page.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
     page.title = "Flet Chat"
 
-    def join_chat_click(e):
-        user_name = (join_user_name.value or "").strip()
+    # Variáveis de estado
+    topic = "__rooms__"
+    rooms: list[str] = []
+    subscribed_rooms: set[str] = set()
+    room_history: dict[str, list[Message]] = {}
+    current_room = ""
+    active_user_name = ""
+    topic_subscribed = False
 
+    # Funções auxiliares
+    def open_dialog(dialog: ft.AlertDialog):
+        dialog.open = True
+        page.update()
+        
+    def close_dialog(dialog: ft.AlertDialog):
+        dialog.open = False
+        page.update()
+    
+    # Valida o nome de utilizador atraves do armazenamento da sessão, garantindo que é uma string não vazia    
+    def valid_user_name() -> str:
+        if active_user_name:
+            return active_user_name
+
+        stored_user_name = page.session.store.get("user_name")
+        if isinstance(stored_user_name, str):
+            user_name = stored_user_name.strip()
+            if user_name:
+                return user_name
+        return ""
+
+    def is_logged_in() -> bool:
+        return bool(valid_user_name())
+    
+    # Normaliza o nome da sala para garantir consistência (removendo espaços e convertendo em minusculas)
+    def normalize_room_name(value: str) -> str:
+        return (value or "").strip().lower()
+
+    # Controlo de mensagem (formatação diferente para mensagens de chat e de sistema)
+    def message_control(message: Message):
+        if message.message_type == "chat_message":
+            return ChatMessage(message)
+        return ft.Text(
+            message.text,
+            style=ft.TextStyle(italic=True),
+            color=ft.Colors.BLUE_700,
+            size=12,
+        )
+        
+    # Atualiza a lista de mensagens da sala atual
+    def current_room_message():
+        chat.controls.clear()
+        for message in room_history.get(current_room, []):
+            chat.controls.append(message_control(message))
+
+    def refresh_room_tabs():
+        tab_controls: list[ft.Control] = [
+            ft.TextButton(
+                content=ft.Text(room_name),
+                style=ft.ButtonStyle(
+                    bgcolor=ft.Colors.BLUE_200 if room_name == current_room else ft.Colors.GREY_300,
+                    color=ft.Colors.BLACK,
+                ),
+                on_click=lambda e, selected_room=room_name: switch_room(selected_room),
+            )
+            for room_name in rooms
+        ]
+        room_tabs_row.controls = tab_controls
+
+    # Garante que o utilizador esteja subscrito ao topico principal
+    def topic_subscription():
+        nonlocal topic_subscribed
+        if topic_subscribed:
+            return
+
+        page.pubsub.subscribe_topic(topic, on_message)
+        topic_subscribed = True
+
+    # Verifica se a sala existe e se nao cria e subscreve o utilizador
+    def verify_room(room_name: str):
+        room = normalize_room_name(room_name)
+        if not room:
+            return ""
+
+        if room not in rooms:
+            rooms.append(room)
+
+        if room not in subscribed_rooms:
+            page.pubsub.subscribe_topic(room, on_message)
+            subscribed_rooms.add(room)
+
+        if room not in room_history:
+            room_history[room] = []
+
+        refresh_room_tabs()
+        return room
+
+    def switch_room(room_name: str):
+        nonlocal current_room
+        room = verify_room(room_name)
+        if not room:
+            return
+
+        current_room = room
+        page.session.store.set("room_name", current_room)
+        room_badge.value = f"Sala atual: {current_room}"
+
+        stored_user_name = valid_user_name() or "Unk"
+        new_message.hint_text = f"Mensagem para {stored_user_name}@{current_room}"
+
+        current_room_message()
+        refresh_room_tabs()
+
+    def join_chat_click(e):
+        nonlocal active_user_name
+        user_name = (join_name.value or "").strip()
         if not user_name:
-            join_user_name.error = "O nome não pode estar vazio."
+            join_name.error = "O nome não pode estar vazio."
             page.update()
             return
 
-        join_user_name.error = None
+        join_name.error = None
+        active_user_name = user_name
         page.session.store.set("user_name", user_name)
-        welcome_dlg.open = False
-        new_message.prefix = ft.Text(f"{user_name}: ")
-        page.pubsub.send_all(
+        close_dialog(welcome_dlg)
+
+        topic_subscription()
+        default_room = verify_room("geral")
+        switch_room(default_room)
+        page.pubsub.send_all_on_topic(
+            default_room,
             Message(
                 user_name=user_name,
-                text=f"{user_name} juntou-se à conversa.",
+                text=f"{user_name} juntou-se à sala '{default_room}'.",
                 message_type="login_message",
-            )
+                room_name=default_room,
+            ),
+        )
+        new_message.disabled = False
+        create_room_btn.disabled = False
+        page.update()
+
+    def create_room_click(e):
+        if not is_logged_in():
+            open_dialog(welcome_dlg)
+            return
+
+        room_name = normalize_room_name(create_room_name.value or "")
+        if not room_name:
+            create_room_name.error = "O nome da sala não pode estar vazio."
+            page.update()
+            return
+
+        create_room_name.error = None
+        create_room_name.value = ""
+        close_dialog(create_room_dlg)
+
+        switch_room(room_name)
+
+        stored_user_name = page.session.store.get("user_name")
+        if not isinstance(stored_user_name, str) or not stored_user_name:
+            stored_user_name = "Unk"
+
+        page.pubsub.send_all_on_topic(
+            room_name,
+            Message(
+                user_name="System",
+                text=f"{stored_user_name} abriu a sala '{room_name}'.",
+                message_type="login_message",
+                room_name=room_name,
+            ),
+        )
+        page.pubsub.send_all_on_topic(
+            topic,
+            Message(
+                user_name="System",
+                text=f"Sala '{room_name}' criada.",
+                message_type="room_created",
+                room_name=room_name,
+            ),
         )
         page.update()
-    
+
+    def open_create_room_dlg(e):
+        if not is_logged_in():
+            open_dialog(welcome_dlg)
+            return
+
+        create_room_name.error = None
+        create_room_name.value = ""
+        open_dialog(create_room_dlg)
+
     # Função para lidar com o envio de mensagens
     async def send_message_click(e):
-        if new_message.value != "":
-            stored_user_name = page.session.store.get("user_name")
-            if not isinstance(stored_user_name, str):
-                stored_user_name = "Unk"
-            page.pubsub.send_all(
-                Message(
-                    stored_user_name,
-                    new_message.value,
-                    message_type="chat_message",
-                )
-            )
-            new_message.value = ""
-            await new_message.focus()
-    
-    # Função para lidar com mensagens recebidas
-    def on_message(message: Message):
-        if message.message_type == "chat_message":
-            m = ChatMessage(message)
-        elif message.message_type == "login_message":
-            m = ft.Text(message.text, italic=True, color=ft.Colors.BLACK_45, size=12)
-        chat.controls.append(m)
+        message_text = (new_message.value or "").strip()
+        if not message_text:
+            return
+
+        stored_user_name = valid_user_name()
+        if not stored_user_name:
+            join_name.error = "Inicia sessão para enviar mensagens."
+            open_dialog(welcome_dlg)
+            return
+
+        stored_room_name = page.session.store.get("room_name")
+        if not isinstance(stored_room_name, str) or not stored_room_name:
+            return
+
+        page.pubsub.send_all_on_topic(
+            stored_room_name,
+            Message(
+                user_name=stored_user_name,
+                text=message_text,
+                message_type="chat_message",
+                room_name=stored_room_name,
+            ),
+        )
+        new_message.value = ""
+        await new_message.focus()
         page.update()
 
-    page.pubsub.subscribe(on_message)
+    # Função para lidar com mensagens recebidas
+    def on_message(*args):
+        message: Message | dict
+        topic_from_event = ""
 
-    # Caixa de dialogo que pede o nome de utilizador
-    join_user_name = ft.TextField(
-        label="Introduza o seu nome",
-        autofocus=True,
-        on_submit=join_chat_click,
-    )
-    welcome_dlg = ft.AlertDialog(
-        open=True,
-        modal=True,
-        title=ft.Text("Bem-vindo a LESTI chat room!"),
-        content=ft.Column([join_user_name], width=300, tight=True),
-        actions=[ft.Button(content="Join chat", on_click=join_chat_click)],
-        actions_alignment=ft.MainAxisAlignment.END,
-    )
+        if len(args) == 1:
+            message = args[0]
+        elif len(args) == 2:
+            topic_from_event = str(args[0] or "")
+            message = args[1]
+        else:
+            return
 
-    page.overlay.append(welcome_dlg)
+        if not isinstance(message, (Message, dict)):
+            return
+
+        if isinstance(message, dict):
+            message_type = str(message.get("message_type") or "chat_message")
+            message_room = str(message.get("room_name") or "")
+            if message_type == "room_created":
+                verify_room(message_room)
+                page.update()
+                return
+
+            topic_name = normalize_room_name(topic_from_event or message_room or "geral")
+            if topic_name not in room_history:
+                room_history[topic_name] = []
+
+            room_history[topic_name].append(
+                Message(
+                    user_name=str(message.get("user_name") or message.get("user") or "Unk"),
+                    text=str(message.get("text") or ""),
+                    message_type=message_type,
+                    room_name=topic_name,
+                )
+            )
+
+            if topic_name == current_room:
+                last_msg = room_history[topic_name][-1]
+                chat.controls.append(message_control(last_msg))
+                page.update()
+            return
+
+        message_room = getattr(message, "room_name", "")
+        if message.message_type == "room_created":
+            verify_room(message_room)
+            page.update()
+            return
+
+        topic_name = normalize_room_name(topic_from_event or message_room or "geral")
+        if topic_name not in room_history:
+            room_history[topic_name] = []
+
+        if not getattr(message, "room_name", ""):
+            message = Message(
+                user_name=message.user_name,
+                text=message.text,
+                message_type=message.message_type,
+                room_name=topic_name,
+            )
+
+        room_history[topic_name].append(message)
+
+        if topic_name == current_room:
+            chat.controls.append(message_control(message))
+            page.update()
 
     # Mensagens de chat
     chat = ft.ListView(
@@ -132,6 +358,9 @@ def main(page: ft.Page):
         spacing=10,
         auto_scroll=True,
     )
+
+    room_badge = ft.Text("Sala atual: (não selecionada)", size=12, color=ft.Colors.WHITE_70)
+    room_tabs_row = ft.Row(wrap=True, spacing=8)
 
     # Novo formulário de mensagem
     new_message = ft.TextField(
@@ -145,8 +374,87 @@ def main(page: ft.Page):
         on_submit=send_message_click,
     )
 
+    # Caixa de dialogo que pede o nome de utilizador
+    join_name = ft.TextField(
+        label="Introduza o seu nome",
+        autofocus=True,
+        on_submit=join_chat_click,
+    )
+
+    welcome_dlg = ft.AlertDialog(
+        open=False,
+        modal=True,
+        title=ft.Text("Bem-vindo a LESTI chat room!"),
+        content=ft.Column([join_name], width=300, tight=True),
+        actions=[ft.Button(content="Entrar", on_click=join_chat_click)],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+
+    create_room_name = ft.TextField(
+        label="Nome da sala",
+        hint_text="ex: projeto-mobile",
+        on_submit=create_room_click,
+    )
+    create_room_dlg = ft.AlertDialog(
+        open=False,
+        modal=True,
+        title=ft.Text("Criar sala"),
+        content=ft.Column([create_room_name], width=300, tight=True),
+        actions=[
+            ft.TextButton("Cancelar", on_click=lambda e: close_create_room_dlg()),
+            ft.Button(content="Criar", on_click=create_room_click),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+
+    def close_create_room_dlg():
+        close_dialog(create_room_dlg)
+
+    page.overlay.append(welcome_dlg)
+    page.overlay.append(create_room_dlg)
+
+    create_room_btn = ft.IconButton(
+        icon=ft.Icons.ADD_BOX_ROUNDED,
+        tooltip="+",
+        on_click=open_create_room_dlg,
+        disabled=True,
+    )
+
+    def bootstrap_session_state():
+        nonlocal active_user_name
+        stored_user_name = valid_user_name()
+        if not stored_user_name:
+            active_user_name = ""
+            new_message.disabled = True
+            create_room_btn.disabled = True
+            open_dialog(welcome_dlg)
+            return
+
+        active_user_name = stored_user_name
+        new_message.disabled = False
+        create_room_btn.disabled = False
+        close_dialog(welcome_dlg)
+
+        stored_room_name = page.session.store.get("room_name")
+        if not isinstance(stored_room_name, str) or not stored_room_name.strip():
+            stored_room_name = "geral"
+
+        ensured_room = verify_room(stored_room_name)
+        switch_room(ensured_room)
+
+    bootstrap_session_state()
+
     # Adicionar tudo à página
     page.add(
+        ft.Row(
+            controls=[
+                create_room_btn,
+                room_tabs_row,
+            ],
+            alignment=ft.MainAxisAlignment.START,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        room_badge,
         ft.Container(
             content=chat,
             border=ft.Border.all(1, ft.Colors.OUTLINE),
