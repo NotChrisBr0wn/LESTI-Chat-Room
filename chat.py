@@ -62,27 +62,35 @@ def main(page: ft.Page):
     page.title = "Flet Chat"
 
     def join_chat_click(e):
-        if not join_user_name.value:
-            join_user_name.error_text = "O nome não pode estar vazio."
-            join_user_name.update()
-        else:
-            page.session.store.set("user_name", join_user_name.value)
-            welcome_dlg.open = False
-            new_message.prefix = ft.Text(f"{join_user_name.value}: ")
-            page.pubsub.send_all(
-                Message(
-                    user_name=join_user_name.value,
-                    text=f"{join_user_name.value} juntou-se à conversa.",
-                    message_type="login_message",
-                )
+        user_name = (join_user_name.value or "").strip()
+
+        if not user_name:
+            join_user_name.error = "O nome não pode estar vazio."
+            page.update()
+            return
+
+        join_user_name.error = None
+        page.session.store.set("user_name", user_name)
+        welcome_dlg.open = False
+        new_message.prefix = ft.Text(f"{user_name}: ")
+        page.pubsub.send_all(
+            Message(
+                user_name=user_name,
+                text=f"{user_name} juntou-se à conversa.",
+                message_type="login_message",
             )
+        )
+        page.update()
     
     # Função para lidar com o envio de mensagens
     async def send_message_click(e):
         if new_message.value != "":
+            stored_user_name = page.session.store.get("user_name")
+            if not isinstance(stored_user_name, str):
+                stored_user_name = "Unk"
             page.pubsub.send_all(
                 Message(
-                    page.session.store.get("user_name"),
+                    stored_user_name,
                     new_message.value,
                     message_type="chat_message",
                 )
@@ -111,7 +119,7 @@ def main(page: ft.Page):
         open=True,
         modal=True,
         title=ft.Text("Bem-vindo a LESTI chat room!"),
-        content=ft.Column([join_user_name], width=300, height=70, tight=True),
+        content=ft.Column([join_user_name], width=300, tight=True),
         actions=[ft.Button(content="Join chat", on_click=join_chat_click)],
         actions_alignment=ft.MainAxisAlignment.END,
     )
