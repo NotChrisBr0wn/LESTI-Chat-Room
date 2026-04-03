@@ -29,6 +29,9 @@ class Message:  # noqa: B903 (variável de classe mutável intencional para reac
     attachment_mime: str = ""
     attachment_data: str = ""
     attachment_size: int = 0
+    edited: bool = False
+    deleted_for_all: bool = False
+    recipient_name: str = ""
 
 
 REACTIONS = {
@@ -40,7 +43,15 @@ REACTIONS = {
 
 @ft.control
 class ChatMessage(ft.Row):
-    def __init__(self, message: Message, on_react, attachment_preview: ft.Control | None = None):
+    def __init__(
+        self,
+        message: Message,
+        on_react,
+        attachment_preview: ft.Control | None = None,
+        can_manage: bool = False,
+        on_manage_message=None,
+        on_user_click=None,
+    ):
         super().__init__()
         self.message = message
         self.on_react = on_react
@@ -56,25 +67,51 @@ class ChatMessage(ft.Row):
                 )
             )
 
-        message_controls: list[ft.Control] = [
-            ft.Text(
-                self.message.user_name,
-                weight=ft.FontWeight.BOLD,
-                color=ft.Colors.GREEN_800,
+        header_row_controls: list[ft.Control] = [
+            ft.Container(
+                content=ft.Text(
+                    self.message.user_name,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.GREEN_800,
+                ),
+                on_click=lambda _e: on_user_click(self.message.user_name) if on_user_click else None,
             )
         ]
+        if can_manage and on_manage_message and self.message.message_id:
+            header_row_controls.append(
+                ft.IconButton(
+                    icon=ft.Icons.MORE_VERT,
+                    icon_size=14,
+                    tooltip="Opções",
+                    on_click=lambda _e, msg_id=self.message.message_id: on_manage_message(msg_id),
+                )
+            )
+
+        message_controls: list[ft.Control] = [
+            ft.Row(controls=header_row_controls, tight=True, spacing=4)
+        ]
+
         if self.message.text.strip() and not self.message.attachment_name:
             message_controls.append(ft.Text(self.message.text, selectable=True, color=ft.Colors.WHITE_70))
+
+        if self.message.edited and not self.message.deleted_for_all:
+            message_controls.append(ft.Text("editada", size=10, italic=True, color=ft.Colors.WHITE_54))
+
         if attachment_preview:
             message_controls.append(attachment_preview)
         message_controls.append(ft.Row(controls=reaction_buttons, spacing=4, wrap=True))
 
-        self.controls = [
-            ft.CircleAvatar(
+        avatar = ft.Container(
+            content=ft.CircleAvatar(
                 content=ft.Text(self.get_initials(self.message.user_name)),
                 color=ft.Colors.WHITE,
                 bgcolor=self.get_avatar_color(self.message.user_name),
             ),
+            on_click=lambda _e: on_user_click(self.message.user_name) if on_user_click else None,
+        )
+
+        self.controls = [
+            avatar,
             ft.Column(
                 tight=True,
                 spacing=5,
@@ -106,7 +143,7 @@ class ChatMessage(ft.Row):
         ]
         return colors_lookup[hash(user_name) % len(colors_lookup)]
 
-# Função principal 
+# Função principal
 def main(page: ft.Page):
     page.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
     page.title = "Flet Chat"
@@ -115,12 +152,26 @@ def main(page: ft.Page):
     topic = "__rooms__"
     rooms: list[str] = []
     subscribed_rooms: set[str] = set()
+    subscribed_private_topics: set[str] = set()
     room_history: dict[str, list[Message]] = {}
+    room_users_by_room: dict[str, set[str]] = {}
+    hidden_message_ids_by_room: dict[str, set[str]] = {}
     processed_reaction_requests: set[str] = set()
     current_room = ""
     active_user_name = ""
     topic_subscribed = False
     tab_id = uuid.uuid4().hex
+    selected_message_id = ""
+    editing_message_id = ""
+    # Estado para mensagens privadas
+    dm_conversations: dict[str, list[Message]] = {}
+    current_dm_user = ""
+    selected_dm_user = ""
+    dm_unread_by_user: dict[str, int] = {}
+    dm_recipient_input = ft.TextField(label="Mensagem privada", multiline=True, min_lines=1, max_lines=4)
+    
+    # Snackbar para notificações
+    dm_snackbar = ft.SnackBar(ft.Text(""), duration=5000)
 
     # Funções auxiliares
     def open_dialog(dialog: ft.DialogControl):
@@ -150,10 +201,152 @@ def main(page: ft.Page):
     def normalize_room_name(value: str) -> str:
         return (value or "").strip().lower()
 
+    def init_room_users(room_name: str):
+        if room_name not in room_users_by_room:
+            room_users_by_room[room_name] = set()
+
+    def track_room_user(room_name: str, user_name: str):
+        room = normalize_room_name(room_name)
+        user = (user_name or "").strip()
+        if not room or not user or user.lower() == "system":
+            return
+        init_room_users(room)
+        room_users_by_room[room].add(user)
+
+    # Atualiza membros visíveis da sala atual
+    def refresh_users_sidebar():
+        init_room_users(current_room)
+        users = sorted(room_users_by_room.get(current_room, set()), key=str.lower)
+        users_col.controls = []
+        if not users:
+            users_col.controls.append(ft.Text("Sem utilizadores visíveis", size=12, color=ft.Colors.WHITE_54))
+            return
+
+        for user_name in users:
+            users_col.controls.append(
+                ft.TextButton(
+                    content=ft.Row(
+                        controls=[
+                            ft.CircleAvatar(
+                                radius=12,
+                                content=ft.Text(user_name[:1].upper() if user_name else "?", size=10),
+                                color=ft.Colors.WHITE,
+                                bgcolor=ft.Colors.BLUE_GREY_400,
+                            ),
+                            ft.Text(user_name),
+                        ],
+                        spacing=8,
+                    ),
+                    style=ft.ButtonStyle(padding=8),
+                    on_click=lambda _e, target=user_name: open_dm_dialog(target),
+                )
+            )
+
+    # Chave canônica para um par de utilizadores
+    def dm_key_for(peer_name: str) -> str:
+        me = valid_user_name() or ""
+        peer = (peer_name or "").strip()
+        if not me or not peer:
+            return ""
+        pair = sorted([me, peer], key=str.lower)
+        return f"{pair[0]}|{pair[1]}"
+
+    # Sidebar de DMs com badge de não lidas
+    def refresh_dm_sidebar():
+        me = valid_user_name() or ""
+        dm_col.controls = []
+
+        peers: set[str] = set(dm_unread_by_user.keys())
+        for key in dm_conversations:
+            if "|" not in key:
+                continue
+            left, right = key.split("|", 1)
+            if left == me:
+                peers.add(right)
+            elif right == me:
+                peers.add(left)
+
+        ordered_peers = sorted(peers, key=str.lower)
+        if not ordered_peers:
+            dm_col.controls.append(ft.Text("Sem DMs", size=12, color=ft.Colors.WHITE_54))
+            return
+
+        for peer in ordered_peers:
+            unread = dm_unread_by_user.get(peer, 0)
+            badge = ft.Container(
+                content=ft.Text(str(unread), size=10, color=ft.Colors.WHITE),
+                bgcolor=ft.Colors.RED_500,
+                border_radius=10,
+                padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                visible=unread > 0,
+            )
+            dm_col.controls.append(
+                ft.TextButton(
+                    content=ft.Row(
+                        controls=[
+                            ft.CircleAvatar(
+                                radius=12,
+                                content=ft.Text(peer[:1].upper() if peer else "?", size=10),
+                                color=ft.Colors.WHITE,
+                                bgcolor=ft.Colors.BLUE_400,
+                            ),
+                            ft.Text(peer, weight=ft.FontWeight.W_500),
+                            ft.Container(expand=True),
+                            badge,
+                        ],
+                        alignment=ft.MainAxisAlignment.START,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=8,
+                    ),
+                    style=ft.ButtonStyle(
+                        bgcolor=ft.Colors.BLUE_GREY_800 if peer == selected_dm_user else None,
+                        padding=8,
+                    ),
+                    on_click=lambda _e, target=peer: open_dm_thread(target),
+                )
+            )
+
+    def open_dm_thread(peer_name: str):
+        nonlocal selected_dm_user
+        peer = (peer_name or "").strip()
+        if not peer or peer == (valid_user_name() or ""):
+            return
+        selected_dm_user = peer
+        dm_unread_by_user[peer] = 0
+        room_badge.value = f"Conversa privada: {peer}"
+        new_message.hint_text = f"Mensagem privada para {peer}"
+        load_room_messages()
+        refresh_dm_sidebar()
+        page.update()
+
     def ensure_reactions(message: Message):
         for reaction_key in REACTIONS:
             if reaction_key not in message.reaction_users:
                 message.reaction_users[reaction_key] = []
+
+    def init_hidden_ids(room_name: str):
+        if room_name not in hidden_message_ids_by_room:
+            hidden_message_ids_by_room[room_name] = set()
+
+    def is_hidden(room_name: str, message_id: str) -> bool:
+        init_hidden_ids(room_name)
+        return bool(message_id and message_id in hidden_message_ids_by_room[room_name])
+
+    def is_own_message(message: Message) -> bool:
+        if message.tab_id and message.tab_id == tab_id:
+            return True
+        return bool(message.user_name and message.user_name == (valid_user_name() or ""))
+
+    def find_message(room_name: str, message_id: str) -> Message | None:
+        for existing_message in room_history.get(room_name, []):
+            if existing_message.message_id == message_id:
+                return existing_message
+        return None
+
+    def can_manage(request_user_name: str, request_tab_id: str, target_message: Message) -> bool:
+        if request_tab_id and target_message.tab_id:
+            return request_tab_id == target_message.tab_id
+        return bool(request_user_name and request_user_name == target_message.user_name)
 
     preview_image_title = ft.Text("", weight=ft.FontWeight.BOLD)
     preview_image = ft.Image(src="", width=900, height=600, fit=ft.BoxFit.CONTAIN)
@@ -167,8 +360,124 @@ def main(page: ft.Page):
         actions_alignment=ft.MainAxisAlignment.END,
     )
 
+    edit_message_input = ft.TextField(label="Nova mensagem", multiline=True, min_lines=1, max_lines=4)
+
+    def close_actions_dlg():
+        close_dialog(message_actions_dlg)
+
+    def close_edit_dlg():
+        close_dialog(edit_message_dlg)
+
+    async def save_edit(_):
+        nonlocal editing_message_id
+        new_text = (edit_message_input.value or "").strip()
+        if not editing_message_id or not new_text:
+            return
+
+        stored_room_name = page.session.store.get("room_name")
+        if not isinstance(stored_room_name, str) or not stored_room_name:
+            return
+
+        page.pubsub.send_all_on_topic(
+            stored_room_name,
+            Message(
+                user_name=valid_user_name() or "Unk",
+                text=new_text,
+                message_type="message_edit",
+                room_name=stored_room_name,
+                target_message_id=editing_message_id,
+                tab_id=tab_id,
+            ),
+        )
+        editing_message_id = ""
+        edit_message_input.value = ""
+        close_edit_dlg()
+
+    def hide_message(_):
+        nonlocal selected_message_id
+        stored_room_name = page.session.store.get("room_name")
+        if not isinstance(stored_room_name, str) or not stored_room_name or not selected_message_id:
+            return
+
+        init_hidden_ids(stored_room_name)
+        hidden_message_ids_by_room[stored_room_name].add(selected_message_id)
+        selected_message_id = ""
+        close_actions_dlg()
+        load_room_messages()
+        page.update()
+
+    def delete_message(_):
+        nonlocal selected_message_id
+        stored_room_name = page.session.store.get("room_name")
+        if not isinstance(stored_room_name, str) or not stored_room_name or not selected_message_id:
+            return
+
+        page.pubsub.send_all_on_topic(
+            stored_room_name,
+            Message(
+                user_name=valid_user_name() or "Unk",
+                text="",
+                message_type="message_delete_all",
+                room_name=stored_room_name,
+                target_message_id=selected_message_id,
+                tab_id=tab_id,
+            ),
+        )
+        selected_message_id = ""
+        close_actions_dlg()
+
+    def edit_message(_):
+        nonlocal editing_message_id
+        stored_room_name = page.session.store.get("room_name")
+        if not isinstance(stored_room_name, str) or not stored_room_name or not selected_message_id:
+            return
+
+        target_message = find_message(stored_room_name, selected_message_id)
+        if not target_message or target_message.deleted_for_all or target_message.attachment_name:
+            close_actions_dlg()
+            return
+
+        editing_message_id = selected_message_id
+        selected_message_text = target_message.text or ""
+        edit_message_input.value = selected_message_text
+        close_actions_dlg()
+        open_dialog(edit_message_dlg)
+
+    def show_actions(message_id: str):
+        nonlocal selected_message_id
+        selected_message_id = message_id
+        open_dialog(message_actions_dlg)
+
+    message_actions_dlg = ft.AlertDialog(
+        open=False,
+        modal=True,
+        title=ft.Text("Opções da mensagem"),
+        content=ft.Column(
+            controls=[
+                ft.TextButton("Editar", on_click=edit_message),
+                ft.TextButton("Apagar para mim", on_click=hide_message),
+                ft.TextButton("Apagar para todos", on_click=delete_message),
+            ],
+            tight=True,
+        ),
+        actions=[ft.TextButton("Cancelar", on_click=lambda _: close_actions_dlg())],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+
+    edit_message_dlg = ft.AlertDialog(
+        open=False,
+        modal=True,
+        title=ft.Text("Editar mensagem"),
+        content=ft.Column([edit_message_input], width=420, tight=True),
+        actions=[
+            ft.TextButton("Cancelar", on_click=lambda _: close_edit_dlg()),
+            ft.Button(content="Guardar", on_click=save_edit),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+
     # Preview de imagens em mensagens, abrindo um dialogo com a imagem em tamanho maior quando clicada
-    def open_image_preview(image_name: str, mime_type: str, image_data: str):
+    def show_image(image_name: str, mime_type: str, image_data: str):
         if not image_data:
             return
 
@@ -184,7 +493,7 @@ def main(page: ft.Page):
         if message.attachment_data and message.attachment_mime.startswith("image/"):
             return ft.GestureDetector(
                 mouse_cursor=ft.MouseCursor.CLICK,
-                on_tap=lambda _e, msg=message: open_image_preview(
+                on_tap=lambda _e, msg=message: show_image(
                     msg.attachment_name,
                     msg.attachment_mime,
                     msg.attachment_data,
@@ -442,10 +751,17 @@ def main(page: ft.Page):
 
     # Controlo de mensagem (formatação diferente para mensagens de chat e de sistema)
     def message_control(message: Message):
-        if message.message_type == "chat_message":
+        if message.message_type in ("chat_message", "direct_message"):
             ensure_reactions(message)
             attachment_preview = build_attachment_preview(message)
-            return ChatMessage(message, on_react=react, attachment_preview=attachment_preview)
+            return ChatMessage(
+                message,
+                on_react=react,
+                attachment_preview=attachment_preview,
+                can_manage=is_own_message(message) and not message.deleted_for_all,
+                on_manage_message=show_actions,
+                on_user_click=open_dm_dialog,
+            )
         return ft.Text(
             message.text,
             style=ft.TextStyle(italic=True),
@@ -453,25 +769,43 @@ def main(page: ft.Page):
             size=12,
         )
         
-    # Atualiza a lista de mensagens da sala atual
+    # Atualiza painel central conforme o contexto
     def load_room_messages():
         chat.controls.clear()
+
+        if selected_dm_user:
+            dm_key = dm_key_for(selected_dm_user)
+            for message in dm_conversations.get(dm_key, []):
+                chat.controls.append(message_control(message))
+            refresh_dm_sidebar()
+            return
+
         for message in room_history.get(current_room, []):
+            if is_hidden(current_room, message.message_id):
+                continue
             chat.controls.append(message_control(message))
+        refresh_users_sidebar()
 
     def update_rooms():
-        tab_controls: list[ft.Control] = [
+        room_controls: list[ft.Control] = [
             ft.TextButton(
                 content=ft.Text(room_name),
                 style=ft.ButtonStyle(
-                    bgcolor=ft.Colors.BLUE_200 if room_name == current_room else ft.Colors.GREY_300,
-                    color=ft.Colors.BLACK,
+                    bgcolor=ft.Colors.BLUE_400 if room_name == current_room and not selected_dm_user else None,
+                    color=ft.Colors.WHITE,
+                    padding=8,
                 ),
-                on_click=lambda e, selected_room=room_name: switch_room(selected_room),
+                on_click=lambda e, selected_room=room_name: open_room_thread(selected_room),
             )
             for room_name in rooms
         ]
-        room_tabs_row.controls = tab_controls
+        rooms_col.controls = room_controls
+        refresh_dm_sidebar()
+
+    def open_room_thread(room_name: str):
+        nonlocal selected_dm_user
+        selected_dm_user = ""
+        switch_room(room_name)
 
     # Garante que o utilizador esteja subscrito ao topico principal
     def topic_subscription():
@@ -481,6 +815,13 @@ def main(page: ft.Page):
 
         page.pubsub.subscribe_topic(topic, on_message)
         topic_subscribed = True
+
+    def ensure_private_subscription(user_name: str):
+        user = (user_name or "").strip()
+        if not user or user in subscribed_private_topics:
+            return
+        page.pubsub.subscribe_topic(user, on_message)
+        subscribed_private_topics.add(user)
 
     # Verifica se a sala existe e se nao cria e subscreve o utilizador
     def verify_room(room_name: str):
@@ -497,25 +838,68 @@ def main(page: ft.Page):
 
         if room not in room_history:
             room_history[room] = []
+        init_room_users(room)
+        init_hidden_ids(room)
 
         update_rooms()
         return room
 
     def switch_room(room_name: str):
-        nonlocal current_room
+        nonlocal current_room, selected_dm_user
         room = verify_room(room_name)
         if not room:
             return
 
+        selected_dm_user = ""
         current_room = room
         page.session.store.set("room_name", current_room)
         room_badge.value = f"Sala atual: {current_room}"
 
         stored_user_name = valid_user_name() or "Unk"
+        track_room_user(current_room, stored_user_name)
         new_message.hint_text = f"Mensagem para {stored_user_name}@{current_room}"
 
         load_room_messages()
         update_rooms()
+        send_presence_announce(current_room)
+        request_room_presence(current_room)
+
+    # Sincroniza presença entre sessões
+    def send_presence_announce(room_name: str, recipient_name: str = ""):
+        stored_user_name = valid_user_name()
+        room = normalize_room_name(room_name)
+        if not stored_user_name or not room:
+            return
+
+        page.pubsub.send_all_on_topic(
+            room,
+            Message(
+                user_name=stored_user_name,
+                text="",
+                message_type="presence_announce",
+                room_name=room,
+                recipient_name=recipient_name,
+                tab_id=tab_id,
+            ),
+        )
+
+    def request_room_presence(room_name: str):
+        stored_user_name = valid_user_name()
+        room = normalize_room_name(room_name)
+        if not stored_user_name or not room:
+            return
+
+        page.pubsub.send_all_on_topic(
+            room,
+            Message(
+                user_name=stored_user_name,
+                text="",
+                message_type="presence_request",
+                room_name=room,
+                recipient_name=stored_user_name,
+                tab_id=tab_id,
+            ),
+        )
 
     def join_chat_click(e):
         nonlocal active_user_name
@@ -531,6 +915,9 @@ def main(page: ft.Page):
         close_dialog(welcome_dlg)
 
         topic_subscription()
+        # Subscrever ao tópico pessoal (para receber mensagens privadas)
+        ensure_private_subscription(user_name)
+        
         default_room = verify_room("geral")
         switch_room(default_room)
         page.pubsub.send_all_on_topic(
@@ -596,7 +983,7 @@ def main(page: ft.Page):
         create_room_name.value = ""
         open_dialog(create_room_dlg)
 
-    # Função para lidar com o envio de mensagens
+    # Envia mensagem para sala ou DM ativa
     async def send_message_click(e):
         message_text = (new_message.value or "").strip()
         if not message_text:
@@ -608,21 +995,41 @@ def main(page: ft.Page):
             open_dialog(welcome_dlg)
             return
 
-        stored_room_name = page.session.store.get("room_name")
-        if not isinstance(stored_room_name, str) or not stored_room_name:
-            return
-
-        page.pubsub.send_all_on_topic(
-            stored_room_name,
-            Message(
+        if selected_dm_user:
+            msg = Message(
                 user_name=stored_user_name,
                 text=message_text,
-                message_type="chat_message",
-                room_name=stored_room_name,
+                message_type="direct_message",
+                room_name="",
                 message_id=uuid.uuid4().hex,
+                tab_id=tab_id,
+                recipient_name=selected_dm_user,
                 reaction_users={key: [] for key in REACTIONS},
-            ),
-        )
+            )
+            dm_key = dm_key_for(selected_dm_user)
+            if dm_key not in dm_conversations:
+                dm_conversations[dm_key] = []
+            dm_conversations[dm_key].append(msg)
+            page.pubsub.send_all_on_topic(selected_dm_user, msg)
+            load_room_messages()
+            refresh_dm_sidebar()
+        else:
+            stored_room_name = page.session.store.get("room_name")
+            if not isinstance(stored_room_name, str) or not stored_room_name:
+                return
+
+            page.pubsub.send_all_on_topic(
+                stored_room_name,
+                Message(
+                    user_name=stored_user_name,
+                    text=message_text,
+                    message_type="chat_message",
+                    room_name=stored_room_name,
+                    message_id=uuid.uuid4().hex,
+                    tab_id=tab_id,
+                    reaction_users={key: [] for key in REACTIONS},
+                ),
+            )
         new_message.value = ""
         await new_message.focus()
         page.update()
@@ -646,6 +1053,44 @@ def main(page: ft.Page):
         if isinstance(message, dict):
             message_type = str(message.get("message_type") or "chat_message")
             message_room = str(message.get("room_name") or "")
+            
+            if message_type == "direct_message":
+                recipient_name = str(message.get("recipient_name") or "")
+                sender_name = str(message.get("user_name") or "")
+                if recipient_name == valid_user_name():
+                    dm_key = dm_key_for(sender_name)
+                    if dm_key not in dm_conversations:
+                        dm_conversations[dm_key] = []
+                    dm_conversations[dm_key].append(
+                        Message(
+                            user_name=sender_name,
+                            text=message.get("text") or "",
+                            message_type="direct_message",
+                            room_name="",
+                            message_id=message.get("message_id") or uuid.uuid4().hex,
+                            tab_id=message.get("tab_id") or "",
+                            recipient_name=recipient_name,
+                            reaction_users={key: [] for key in REACTIONS},
+                        )
+                    )
+                    if selected_dm_user != sender_name:
+                        dm_unread_by_user[sender_name] = dm_unread_by_user.get(sender_name, 0) + 1
+                    refresh_dm_sidebar()
+                    if selected_dm_user == sender_name:
+                        load_room_messages()
+                    # Notificação de DM recebida
+                    dm_snackbar.content = ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.MAIL, color=ft.Colors.BLUE_400),
+                            ft.Text(f"Mensagem privada de {sender_name}"),
+                            ft.TextButton("Ver", on_click=lambda _: open_dm_dialog(sender_name)),
+                        ],
+                        spacing=10,
+                    )
+                    dm_snackbar.open = True
+                    page.update()
+                return
+            
             if message_type == "room_created":
                 verify_room(message_room)
                 page.update()
@@ -654,6 +1099,30 @@ def main(page: ft.Page):
             topic_name = normalize_room_name(topic_from_event or message_room or "geral")
             if topic_name not in room_history:
                 room_history[topic_name] = []
+
+            if message_type in ("chat_message", "login_message"):
+                track_room_user(topic_name, str(message.get("user_name") or ""))
+
+            if message_type == "presence_request":
+                requester_name = str(message.get("user_name") or "")
+                track_room_user(topic_name, requester_name)
+                if requester_name and requester_name != (valid_user_name() or ""):
+                    send_presence_announce(topic_name, requester_name)
+                if topic_name == current_room:
+                    refresh_users_sidebar()
+                    page.update()
+                return
+
+            if message_type == "presence_announce":
+                announced_user = str(message.get("user_name") or "")
+                recipient_name = str(message.get("recipient_name") or "")
+                current_user = valid_user_name() or ""
+                if not recipient_name or recipient_name == current_user:
+                    track_room_user(topic_name, announced_user)
+                    if topic_name == current_room:
+                        refresh_users_sidebar()
+                        page.update()
+                return
 
             if message_type == "reaction_update":
                 target_message_id = str(message.get("target_message_id") or "")
@@ -679,6 +1148,42 @@ def main(page: ft.Page):
                     page.update()
                 return
 
+            if message_type == "message_edit":
+                target_message_id = str(message.get("target_message_id") or "")
+                new_text = str(message.get("text") or "")
+                target_message = find_message(topic_name, target_message_id)
+                if target_message and can_manage(
+                    str(message.get("user_name") or ""),
+                    str(message.get("tab_id") or ""),
+                    target_message,
+                ):
+                    target_message.text = new_text
+                    target_message.edited = True
+                if topic_name == current_room:
+                    load_room_messages()
+                    page.update()
+                return
+
+            if message_type == "message_delete_all":
+                target_message_id = str(message.get("target_message_id") or "")
+                target_message = find_message(topic_name, target_message_id)
+                if target_message and can_manage(
+                    str(message.get("user_name") or ""),
+                    str(message.get("tab_id") or ""),
+                    target_message,
+                ):
+                    target_message.text = "Esta mensagem foi apagada."
+                    target_message.attachment_name = ""
+                    target_message.attachment_mime = ""
+                    target_message.attachment_data = ""
+                    target_message.attachment_size = 0
+                    target_message.edited = False
+                    target_message.deleted_for_all = True
+                if topic_name == current_room:
+                    load_room_messages()
+                    page.update()
+                return
+
             room_history[topic_name].append(
                 Message(
                     user_name=str(message.get("user_name") or message.get("user") or "Unk"),
@@ -696,13 +1201,17 @@ def main(page: ft.Page):
                     attachment_mime=str(message.get("attachment_mime") or ""),
                     attachment_data=str(message.get("attachment_data") or ""),
                     attachment_size=int(message.get("attachment_size") or 0),
+                    edited=bool(message.get("edited") or False),
+                    deleted_for_all=bool(message.get("deleted_for_all") or False),
                 )
             )
 
             if topic_name == current_room:
                 last_msg = room_history[topic_name][-1]
-                chat.controls.append(message_control(last_msg))
-                page.update()
+                if not is_hidden(topic_name, last_msg.message_id):
+                    chat.controls.append(message_control(last_msg))
+                    refresh_users_sidebar()
+                    page.update()
             return
 
         message_room = getattr(message, "room_name", "")
@@ -711,9 +1220,57 @@ def main(page: ft.Page):
             page.update()
             return
 
+        if message.message_type == "direct_message":
+            recipient_name = getattr(message, "recipient_name", "")
+            if recipient_name == valid_user_name():
+                dm_key = dm_key_for(message.user_name)
+                if dm_key not in dm_conversations:
+                    dm_conversations[dm_key] = []
+                dm_conversations[dm_key].append(message)
+                if selected_dm_user != message.user_name:
+                    dm_unread_by_user[message.user_name] = dm_unread_by_user.get(message.user_name, 0) + 1
+                refresh_dm_sidebar()
+                if selected_dm_user == message.user_name:
+                    load_room_messages()
+                # Notificação de DM recebida
+                dm_snackbar.content = ft.Row(
+                    controls=[
+                        ft.Icon(ft.Icons.MAIL, color=ft.Colors.BLUE_400),
+                        ft.Text(f"Mensagem privada de {message.user_name}"),
+                        ft.TextButton("Ver", on_click=lambda _: open_dm_dialog(message.user_name)),
+                    ],
+                    spacing=10,
+                )
+                dm_snackbar.open = True
+                page.update()
+            return
+
         topic_name = normalize_room_name(topic_from_event or message_room or "geral")
         if topic_name not in room_history:
             room_history[topic_name] = []
+
+        if message.message_type in ("chat_message", "login_message"):
+            track_room_user(topic_name, message.user_name)
+
+        if message.message_type == "presence_request":
+            requester_name = message.user_name
+            track_room_user(topic_name, requester_name)
+            if requester_name and requester_name != (valid_user_name() or ""):
+                send_presence_announce(topic_name, requester_name)
+            if topic_name == current_room:
+                refresh_users_sidebar()
+                page.update()
+            return
+
+        if message.message_type == "presence_announce":
+            recipient_name = getattr(message, "recipient_name", "")
+            current_user = valid_user_name() or ""
+            if not recipient_name or recipient_name == current_user:
+                track_room_user(topic_name, message.user_name)
+                if topic_name == current_room:
+                    refresh_users_sidebar()
+                    page.update()
+            return
 
         if message.message_type == "reaction_update":
             if not message.reaction_request_id or message.reaction_request_id in processed_reaction_requests:
@@ -730,6 +1287,31 @@ def main(page: ft.Page):
                         add_reaction(existing_message, message.tab_id, message.reaction_type)
                     break
 
+            if topic_name == current_room:
+                load_room_messages()
+                page.update()
+            return
+
+        if message.message_type == "message_edit":
+            target_message = find_message(topic_name, message.target_message_id)
+            if target_message and can_manage(message.user_name, message.tab_id, target_message):
+                target_message.text = message.text
+                target_message.edited = True
+            if topic_name == current_room:
+                load_room_messages()
+                page.update()
+            return
+
+        if message.message_type == "message_delete_all":
+            target_message = find_message(topic_name, message.target_message_id)
+            if target_message and can_manage(message.user_name, message.tab_id, target_message):
+                target_message.text = "Esta mensagem foi apagada."
+                target_message.attachment_name = ""
+                target_message.attachment_mime = ""
+                target_message.attachment_data = ""
+                target_message.attachment_size = 0
+                target_message.edited = False
+                target_message.deleted_for_all = True
             if topic_name == current_room:
                 load_room_messages()
                 page.update()
@@ -752,6 +1334,8 @@ def main(page: ft.Page):
                 attachment_mime=message.attachment_mime,
                 attachment_data=message.attachment_data,
                 attachment_size=message.attachment_size,
+                edited=message.edited,
+                deleted_for_all=message.deleted_for_all,
             )
 
         if message.message_type == "chat_message":
@@ -759,8 +1343,9 @@ def main(page: ft.Page):
 
         room_history[topic_name].append(message)
 
-        if topic_name == current_room:
+        if topic_name == current_room and not is_hidden(topic_name, message.message_id):
             chat.controls.append(message_control(message))
+            refresh_users_sidebar()
             page.update()
 
     # Mensagens de chat
@@ -771,9 +1356,10 @@ def main(page: ft.Page):
     )
 
     room_badge = ft.Text("Sala atual: (não selecionada)", size=12, color=ft.Colors.WHITE_70)
-    room_tabs_row = ft.Row(wrap=True, spacing=8)
+    rooms_col = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
+    dm_col = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
+    users_col = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO, expand=True)
 
-    # Novo formulário de mensagem
     new_message = ft.TextField(
         hint_text="Escreva uma mensagem...",
         autofocus=True,
@@ -795,7 +1381,7 @@ def main(page: ft.Page):
     welcome_dlg = ft.AlertDialog(
         open=False,
         modal=True,
-        title=ft.Text("Bem-vindo a LESTI chat room!"),
+        title=ft.Text("Login to use DiscirdApp!"),
         content=ft.Column([join_name], width=300, tight=True),
         actions=[ft.Button(content="Entrar", on_click=join_chat_click)],
         actions_alignment=ft.MainAxisAlignment.END,
@@ -821,9 +1407,81 @@ def main(page: ft.Page):
     def close_create_room_dlg():
         close_dialog(create_room_dlg)
 
+    def open_dm_dialog(user_name: str):
+        nonlocal current_dm_user
+        if user_name == valid_user_name():
+            return
+        current_dm_user = user_name
+        dm_recipient_input.value = ""
+        dm_title.value = f"Mensagem privada para {user_name}"
+        open_dialog(dm_dlg)
+
+    def close_dm_dlg():
+        close_dialog(dm_dlg)
+
+    async def send_dm_click(_):
+        nonlocal selected_dm_user
+        if not current_dm_user:
+            return
+        
+        message_text = (dm_recipient_input.value or "").strip()
+        if not message_text:
+            return
+
+        stored_user_name = valid_user_name()
+        if not stored_user_name:
+            return
+
+        msg = Message(
+            user_name=stored_user_name,
+            text=message_text,
+            message_type="direct_message",
+            room_name="",
+            message_id=uuid.uuid4().hex,
+            tab_id=tab_id,
+            recipient_name=current_dm_user,
+            reaction_users={key: [] for key in REACTIONS},
+        )
+        
+        # Guardar localmente no lado do remetente
+        dm_key = dm_key_for(current_dm_user)
+        if dm_key not in dm_conversations:
+            dm_conversations[dm_key] = []
+        dm_conversations[dm_key].append(msg)
+        
+        # Enviar para o destinatário
+        page.pubsub.send_all_on_topic(current_dm_user, msg)
+        selected_dm_user = current_dm_user
+        dm_unread_by_user[current_dm_user] = 0
+        room_badge.value = f"Conversa privada: {current_dm_user}"
+        new_message.hint_text = f"Mensagem privada para {current_dm_user}"
+        load_room_messages()
+        refresh_dm_sidebar()
+        
+        dm_recipient_input.value = ""
+        close_dm_dlg()
+        page.update()
+
+    dm_title = ft.Text("Mensagem privada")
+    dm_dlg = ft.AlertDialog(
+        open=False,
+        modal=False,
+        title=dm_title,
+        content=ft.Column([dm_recipient_input], width=350, tight=True),
+        actions=[
+            ft.TextButton("Cancelar", on_click=lambda _: close_dm_dlg()),
+            ft.Button(content="Enviar", on_click=send_dm_click),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+
     page.overlay.append(welcome_dlg)
     page.overlay.append(create_room_dlg)
+    page.overlay.append(dm_dlg)
     page.overlay.append(image_preview_dlg)
+    page.overlay.append(message_actions_dlg)
+    page.overlay.append(edit_message_dlg)
+    page.overlay.append(dm_snackbar)
     file_picker = ft.FilePicker()
     page.services.append(file_picker)
     page.update()
@@ -850,6 +1508,9 @@ def main(page: ft.Page):
         create_room_btn.disabled = False
         close_dialog(welcome_dlg)
 
+        topic_subscription()
+        ensure_private_subscription(stored_user_name)
+
         stored_room_name = page.session.store.get("room_name")
         if not isinstance(stored_room_name, str) or not stored_room_name.strip():
             stored_room_name = "geral"
@@ -864,18 +1525,56 @@ def main(page: ft.Page):
         ft.Row(
             controls=[
                 create_room_btn,
-                room_tabs_row,
+                ft.Text("DiscirdApp", size=16, weight=ft.FontWeight.BOLD),
             ],
             alignment=ft.MainAxisAlignment.START,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
         room_badge,
-        ft.Container(
-            content=chat,
-            border=ft.Border.all(1, ft.Colors.OUTLINE),
-            border_radius=5,
-            padding=10,
+        ft.Row(
+            controls=[
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Salas", weight=ft.FontWeight.BOLD, size=14),
+                            rooms_col,
+                            ft.Divider(height=10),
+                            ft.Text("Mensagens privadas", weight=ft.FontWeight.BOLD, size=14),
+                            dm_col,
+                        ],
+                        spacing=6,
+                        expand=True,
+                    ),
+                    border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+                    border_radius=5,
+                    padding=10,
+                    width=260,
+                ),
+                ft.Container(
+                    content=chat,
+                    border=ft.Border.all(1, ft.Colors.OUTLINE),
+                    border_radius=5,
+                    padding=10,
+                    expand=5,
+                ),
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Utilizadores na sala", weight=ft.FontWeight.BOLD, size=14),
+                            ft.Divider(height=8),
+                            users_col,
+                        ],
+                        spacing=6,
+                        expand=True,
+                    ),
+                    border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+                    border_radius=5,
+                    padding=10,
+                    width=270,
+                ),
+            ],
             expand=True,
+            spacing=10,
         ),
         ft.Row(
             controls=[
