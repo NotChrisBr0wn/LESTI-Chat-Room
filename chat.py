@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import uuid
 
 import flet as ft
 
@@ -9,13 +10,40 @@ class Message:  # noqa: B903
     text: str
     message_type: str
     room_name: str
+    message_id: str = ""
+    tab_id: str = ""
+    target_message_id: str = ""
+    reaction_request_id: str = ""
+    reaction_type: str = ""
+    reaction_action: str = ""
+    reaction_users: dict[str, list[str]] = field(default_factory=dict)
+
+
+REACTIONS = {
+    "laugh": "😂",
+    "cry": "😢",
+    "heart": "❤️",
+    "cool": "👍",
+}
 
 @ft.control
 class ChatMessage(ft.Row):
-    def __init__(self, message: Message):
+    def __init__(self, message: Message, on_react):
         super().__init__()
         self.message = message
+        self.on_react = on_react
         self.vertical_alignment = ft.CrossAxisAlignment.START
+
+        reaction_buttons: list[ft.Control] = []
+        for reaction_key, emoji in REACTIONS.items():
+            count = len(self.message.reaction_users.get(reaction_key, []))
+            reaction_buttons.append(
+                ft.TextButton(
+                    content=ft.Text(f"{emoji} {count}", size=12),
+                    on_click=lambda e, key=reaction_key: self.on_react(self.message.message_id, key),
+                )
+            )
+
         self.controls = [
             ft.CircleAvatar(
                 content=ft.Text(self.get_initials(self.message.user_name)),
@@ -32,6 +60,7 @@ class ChatMessage(ft.Row):
                         color=ft.Colors.GREEN_800,
                     ),
                     ft.Text(self.message.text, selectable=True, color=ft.Colors.WHITE_70),
+                    ft.Row(controls=reaction_buttons, spacing=4, wrap=True),
                 ],
             ),
         ]
@@ -70,9 +99,11 @@ def main(page: ft.Page):
     rooms: list[str] = []
     subscribed_rooms: set[str] = set()
     room_history: dict[str, list[Message]] = {}
+    processed_reaction_requests: set[str] = set()
     current_room = ""
     active_user_name = ""
     topic_subscribed = False
+    tab_id = uuid.uuid4().hex
 
     # Funções auxiliares
     def open_dialog(dialog: ft.AlertDialog):
@@ -102,10 +133,70 @@ def main(page: ft.Page):
     def normalize_room_name(value: str) -> str:
         return (value or "").strip().lower()
 
+    def ensure_reactions(message: Message):
+        for reaction_key in REACTIONS:
+            if reaction_key not in message.reaction_users:
+                message.reaction_users[reaction_key] = []
+
+    def add_reaction(message: Message, reacting_tab_id: str, reaction_key: str) -> bool:
+        if not message.message_id or reaction_key not in REACTIONS or not reacting_tab_id:
+            return False
+
+        ensure_reactions(message)
+        users = message.reaction_users[reaction_key]
+
+        if reacting_tab_id not in users:
+            users.append(reacting_tab_id)
+        return True
+
+    def remove_reaction(message: Message, reacting_tab_id: str, reaction_key: str) -> bool:
+        if not message.message_id or reaction_key not in REACTIONS or not reacting_tab_id:
+            return False
+
+        ensure_reactions(message)
+        users = message.reaction_users[reaction_key]
+
+        if reacting_tab_id in users:
+            users.remove(reacting_tab_id)
+        return True
+
+    def react(target_message_id: str, reaction_key: str):
+        if not target_message_id or reaction_key not in REACTIONS:
+            return
+
+        stored_user_name = valid_user_name() or "Unk"
+        stored_room_name = page.session.store.get("room_name")
+        if not isinstance(stored_room_name, str) or not stored_room_name:
+            return
+
+        reaction_action = "add"
+        for existing_message in room_history.get(stored_room_name, []):
+            if existing_message.message_id == target_message_id:
+                ensure_reactions(existing_message)
+                current_users = existing_message.reaction_users.get(reaction_key, [])
+                reaction_action = "remove" if tab_id in current_users else "add"
+                break
+
+        page.pubsub.send_all_on_topic(
+            stored_room_name,
+            Message(
+                user_name=stored_user_name,
+                text="",
+                message_type="reaction_update",
+                room_name=stored_room_name,
+                target_message_id=target_message_id,
+                reaction_type=reaction_key,
+                reaction_action=reaction_action,
+                reaction_request_id=uuid.uuid4().hex,
+                tab_id=tab_id,
+            ),
+        )
+
     # Controlo de mensagem (formatação diferente para mensagens de chat e de sistema)
     def message_control(message: Message):
         if message.message_type == "chat_message":
-            return ChatMessage(message)
+            ensure_reactions(message)
+            return ChatMessage(message, on_react=react)
         return ft.Text(
             message.text,
             style=ft.TextStyle(italic=True),
@@ -114,12 +205,12 @@ def main(page: ft.Page):
         )
         
     # Atualiza a lista de mensagens da sala atual
-    def current_room_message():
+    def load_room_messages():
         chat.controls.clear()
         for message in room_history.get(current_room, []):
             chat.controls.append(message_control(message))
 
-    def refresh_room_tabs():
+    def update_rooms():
         tab_controls: list[ft.Control] = [
             ft.TextButton(
                 content=ft.Text(room_name),
@@ -158,7 +249,7 @@ def main(page: ft.Page):
         if room not in room_history:
             room_history[room] = []
 
-        refresh_room_tabs()
+        update_rooms()
         return room
 
     def switch_room(room_name: str):
@@ -174,8 +265,8 @@ def main(page: ft.Page):
         stored_user_name = valid_user_name() or "Unk"
         new_message.hint_text = f"Mensagem para {stored_user_name}@{current_room}"
 
-        current_room_message()
-        refresh_room_tabs()
+        load_room_messages()
+        update_rooms()
 
     def join_chat_click(e):
         nonlocal active_user_name
@@ -279,6 +370,8 @@ def main(page: ft.Page):
                 text=message_text,
                 message_type="chat_message",
                 room_name=stored_room_name,
+                message_id=uuid.uuid4().hex,
+                reaction_users={key: [] for key in REACTIONS},
             ),
         )
         new_message.value = ""
@@ -313,12 +406,41 @@ def main(page: ft.Page):
             if topic_name not in room_history:
                 room_history[topic_name] = []
 
+            if message_type == "reaction_update":
+                target_message_id = str(message.get("target_message_id") or "")
+                reaction_key = str(message.get("reaction_type") or "")
+                reaction_action = str(message.get("reaction_action") or "add")
+                reacting_tab_id = str(message.get("tab_id") or "")
+
+                reaction_request_id = str(message.get("reaction_request_id") or "")
+                if not reaction_request_id or reaction_request_id in processed_reaction_requests:
+                    return
+                processed_reaction_requests.add(reaction_request_id)
+
+                for existing_message in room_history[topic_name]:
+                    if existing_message.message_id == target_message_id:
+                        if reaction_action == "remove":
+                            remove_reaction(existing_message, reacting_tab_id, reaction_key)
+                        else:
+                            add_reaction(existing_message, reacting_tab_id, reaction_key)
+                        break
+
+                if topic_name == current_room:
+                    load_room_messages()
+                    page.update()
+                return
+
             room_history[topic_name].append(
                 Message(
                     user_name=str(message.get("user_name") or message.get("user") or "Unk"),
                     text=str(message.get("text") or ""),
                     message_type=message_type,
                     room_name=topic_name,
+                    message_id=str(message.get("message_id") or uuid.uuid4().hex),
+                    tab_id=str(message.get("tab_id") or ""),
+                    reaction_request_id=str(message.get("reaction_request_id") or ""),
+                    reaction_type=str(message.get("reaction_type") or ""),
+                    reaction_users={k: list(v) for k, v in dict(message.get("reaction_users") or {}).items()},
                 )
             )
 
@@ -338,13 +460,41 @@ def main(page: ft.Page):
         if topic_name not in room_history:
             room_history[topic_name] = []
 
+        if message.message_type == "reaction_update":
+            if not message.reaction_request_id or message.reaction_request_id in processed_reaction_requests:
+                return
+            processed_reaction_requests.add(message.reaction_request_id)
+
+            reaction_action = getattr(message, "reaction_action", "add")
+
+            for existing_message in room_history[topic_name]:
+                if existing_message.message_id == message.target_message_id:
+                    if reaction_action == "remove":
+                        remove_reaction(existing_message, message.tab_id, message.reaction_type)
+                    else:
+                        add_reaction(existing_message, message.tab_id, message.reaction_type)
+                    break
+
+            if topic_name == current_room:
+                load_room_messages()
+                page.update()
+            return
+
         if not getattr(message, "room_name", ""):
             message = Message(
                 user_name=message.user_name,
                 text=message.text,
                 message_type=message.message_type,
                 room_name=topic_name,
+                message_id=message.message_id or uuid.uuid4().hex,
+                tab_id=message.tab_id,
+                reaction_request_id=message.reaction_request_id,
+                reaction_type=message.reaction_type,
+                reaction_users=message.reaction_users,
             )
+
+        if message.message_type == "chat_message":
+            ensure_reactions(message)
 
         room_history[topic_name].append(message)
 
