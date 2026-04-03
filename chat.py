@@ -1,11 +1,19 @@
 from dataclasses import dataclass, field
+import base64
+import mimetypes
+import os
 import uuid
 
 import flet as ft
 
+# Limites para anexos (20MB total, 750KB para anexos inline, 5MB para imagens inline)
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+MAX_INLINE_ATTACHMENT_BYTES = 750_000
+MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+
 
 @dataclass
-class Message:  # noqa: B903
+class Message:  # noqa: B903 (variável de classe mutável intencional para reaction_users)
     user_name: str
     text: str
     message_type: str
@@ -17,6 +25,10 @@ class Message:  # noqa: B903
     reaction_type: str = ""
     reaction_action: str = ""
     reaction_users: dict[str, list[str]] = field(default_factory=dict)
+    attachment_name: str = ""
+    attachment_mime: str = ""
+    attachment_data: str = ""
+    attachment_size: int = 0
 
 
 REACTIONS = {
@@ -28,7 +40,7 @@ REACTIONS = {
 
 @ft.control
 class ChatMessage(ft.Row):
-    def __init__(self, message: Message, on_react):
+    def __init__(self, message: Message, on_react, attachment_preview: ft.Control | None = None):
         super().__init__()
         self.message = message
         self.on_react = on_react
@@ -44,6 +56,19 @@ class ChatMessage(ft.Row):
                 )
             )
 
+        message_controls: list[ft.Control] = [
+            ft.Text(
+                self.message.user_name,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.GREEN_800,
+            )
+        ]
+        if self.message.text.strip() and not self.message.attachment_name:
+            message_controls.append(ft.Text(self.message.text, selectable=True, color=ft.Colors.WHITE_70))
+        if attachment_preview:
+            message_controls.append(attachment_preview)
+        message_controls.append(ft.Row(controls=reaction_buttons, spacing=4, wrap=True))
+
         self.controls = [
             ft.CircleAvatar(
                 content=ft.Text(self.get_initials(self.message.user_name)),
@@ -53,15 +78,7 @@ class ChatMessage(ft.Row):
             ft.Column(
                 tight=True,
                 spacing=5,
-                controls=[
-                    ft.Text(
-                        self.message.user_name,
-                        weight=ft.FontWeight.BOLD,
-                        color=ft.Colors.GREEN_800,
-                    ),
-                    ft.Text(self.message.text, selectable=True, color=ft.Colors.WHITE_70),
-                    ft.Row(controls=reaction_buttons, spacing=4, wrap=True),
-                ],
+                controls=message_controls,
             ),
         ]
 
@@ -106,11 +123,11 @@ def main(page: ft.Page):
     tab_id = uuid.uuid4().hex
 
     # Funções auxiliares
-    def open_dialog(dialog: ft.AlertDialog):
+    def open_dialog(dialog: ft.DialogControl):
         dialog.open = True
         page.update()
         
-    def close_dialog(dialog: ft.AlertDialog):
+    def close_dialog(dialog: ft.DialogControl):
         dialog.open = False
         page.update()
     
@@ -138,6 +155,92 @@ def main(page: ft.Page):
             if reaction_key not in message.reaction_users:
                 message.reaction_users[reaction_key] = []
 
+    preview_image_title = ft.Text("", weight=ft.FontWeight.BOLD)
+    preview_image = ft.Image(src="", width=900, height=600, fit=ft.BoxFit.CONTAIN)
+
+    image_preview_dlg = ft.AlertDialog(
+        open=False,
+        modal=True,
+        title=preview_image_title,
+        content=ft.Container(content=preview_image, width=900, height=600),
+        actions=[ft.TextButton("Fechar", on_click=lambda _: close_dialog(image_preview_dlg))],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+
+    # Preview de imagens em mensagens, abrindo um dialogo com a imagem em tamanho maior quando clicada
+    def open_image_preview(image_name: str, mime_type: str, image_data: str):
+        if not image_data:
+            return
+
+        preview_image_title.value = image_name or "Imagem"
+        preview_image.src = f"data:{mime_type or 'image/png'};base64,{image_data}"
+        open_dialog(image_preview_dlg)
+    
+    # Preview para anexos (mostra o ficheiro e um botao de download)
+    def build_attachment_preview(message: Message):
+        if not message.attachment_name:
+            return None
+
+        if message.attachment_data and message.attachment_mime.startswith("image/"):
+            return ft.GestureDetector(
+                mouse_cursor=ft.MouseCursor.CLICK,
+                on_tap=lambda _e, msg=message: open_image_preview(
+                    msg.attachment_name,
+                    msg.attachment_mime,
+                    msg.attachment_data,
+                ),
+                content=ft.Image(
+                    src=f"data:{message.attachment_mime or 'image/png'};base64,{message.attachment_data}",
+                    width=280,
+                    fit=ft.BoxFit.CONTAIN,
+                ),
+            )
+
+        file_label = message.attachment_name
+        if message.attachment_size:
+            file_label = f"{file_label} ({message.attachment_size} bytes)"
+
+        if not message.attachment_data:
+            return ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.DOWNLOAD_ROUNDED, size=16, color=ft.Colors.BLUE_300),
+                    ft.Text(file_label),
+                    ft.Text("anexo sem dados para transferir", size=12, color=ft.Colors.WHITE_70),
+                ],
+                spacing=6,
+                wrap=True,
+            )
+
+        async def open_attachment(_):
+            if not message.attachment_data:
+                show_attachment_error("Este anexo não tem dados para transferir.")
+                return
+
+            try:
+                file_bytes = base64.b64decode(message.attachment_data)
+            except ValueError:
+                show_attachment_error("Não foi possível processar este anexo.")
+                return
+
+            await file_picker.save_file(
+                file_name=message.attachment_name or "anexo",
+                src_bytes=file_bytes,
+            )
+
+        return ft.Row(
+            controls=[
+                ft.Icon(ft.Icons.DOWNLOAD_ROUNDED, size=16, color=ft.Colors.BLUE_300),
+                ft.Text(message.attachment_name or "ficheiro"),
+                ft.TextButton("Transferir", on_click=open_attachment),
+            ],
+            spacing=6,
+            wrap=True,
+        )
+
+    def show_attachment_error(message: str):
+        open_dialog(ft.SnackBar(content=ft.Text(message)))
+
+    # Funcoes para adicionar e remover reacoes garantindo uma reacao por utilizador
     def add_reaction(message: Message, reacting_tab_id: str, reaction_key: str) -> bool:
         if not message.message_id or reaction_key not in REACTIONS or not reacting_tab_id:
             return False
@@ -156,8 +259,9 @@ def main(page: ft.Page):
         ensure_reactions(message)
         users = message.reaction_users[reaction_key]
 
+        #  Toogle por tab_id garantindo uma reacao unica
         if reacting_tab_id in users:
-            users.remove(reacting_tab_id)
+            users.remove(reacting_tab_id) 
         return True
 
     def react(target_message_id: str, reaction_key: str):
@@ -191,12 +295,157 @@ def main(page: ft.Page):
                 tab_id=tab_id,
             ),
         )
+    
+    # Envio de imagens com validacao de tipo e tamanho usando o file picker
+    async def send_image_attachment(_):
+        stored_room_name = page.session.store.get("room_name")
+        if not isinstance(stored_room_name, str) or not stored_room_name:
+            return
+
+        # Valida o utilizador antes de enviar
+        stored_user_name = valid_user_name()
+        if not stored_user_name:
+            join_name.error = "Inicia sessão para enviar ficheiros."
+            open_dialog(welcome_dlg)
+            return
+
+        # Abre o file picker para escolher uma imagem
+        try:
+            files = await file_picker.pick_files(
+                allow_multiple=False,
+                with_data=True,
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=["png", "jpg", "jpeg"],
+            )
+        except RuntimeError:
+            show_attachment_error("Não foi possível abrir o seletor de imagens.")
+            return
+
+        if not files:
+            return
+
+        selected = files[0]
+        attachment_name = selected.name
+        attachment_mime = mimetypes.guess_type(attachment_name)[0] or "application/octet-stream"
+        attachment_size = int(getattr(selected, "size", 0) or 0)
+
+        if attachment_size > MAX_ATTACHMENT_BYTES:
+            show_attachment_error("O ficheiro não pode exceder 20MB.")
+            return
+
+        if attachment_mime not in {"image/png", "image/jpeg", "image/jpg"}:
+            show_attachment_error("Só são permitidas imagens PNG/JPG/JPEG.")
+            return
+
+        file_bytes = selected.bytes or b""
+        if not file_bytes and selected.path and os.path.exists(selected.path):
+            with open(selected.path, "rb") as file_handle:
+                file_bytes = file_handle.read()
+
+        if not file_bytes:
+            show_attachment_error("Não foi possível ler a imagem selecionada.")
+            return
+
+        if attachment_size <= 0:
+            attachment_size = len(file_bytes)
+
+        attachment_data = ""
+        if attachment_size <= MAX_INLINE_IMAGE_BYTES:
+            attachment_data = base64.b64encode(file_bytes).decode("ascii")
+
+        page.pubsub.send_all_on_topic(
+            stored_room_name,
+            Message(
+                user_name=stored_user_name,
+                text="",
+                message_type="chat_message",
+                room_name=stored_room_name,
+                message_id=uuid.uuid4().hex,
+                tab_id=tab_id,
+                reaction_users={key: [] for key in REACTIONS},
+                attachment_name=attachment_name,
+                attachment_mime=attachment_mime,
+                attachment_data=attachment_data,
+                attachment_size=attachment_size,
+            ),
+        )
+        page.update()
+
+    async def send_zip_attachment(_):
+        stored_room_name = page.session.store.get("room_name")
+        if not isinstance(stored_room_name, str) or not stored_room_name:
+            return
+
+        stored_user_name = valid_user_name()
+        if not stored_user_name:
+            join_name.error = "Inicia sessão para enviar ficheiros."
+            open_dialog(welcome_dlg)
+            return
+
+        try:
+            files = await file_picker.pick_files(
+                allow_multiple=False,
+                with_data=True,
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=["zip"],
+            )
+        except RuntimeError:
+            show_attachment_error("Não foi possível abrir o seletor de ZIP.")
+            return
+
+        if not files:
+            return
+
+        # Validar o ficheiro selecionado
+        selected = files[0]
+        attachment_name = selected.name
+        if os.path.splitext(attachment_name)[1].lower() != ".zip":
+            show_attachment_error("Só são permitidos ficheiros ZIP.")
+            return
+
+        attachment_size = int(getattr(selected, "size", 0) or 0)
+        if attachment_size > MAX_ATTACHMENT_BYTES:
+            show_attachment_error("O ficheiro ZIP não pode exceder 20MB.")
+            return
+
+        file_bytes = selected.bytes or b""
+        if not file_bytes and selected.path and os.path.exists(selected.path):
+            with open(selected.path, "rb") as file_handle:
+                file_bytes = file_handle.read()
+
+        if not file_bytes:
+            show_attachment_error("Não foi possível ler o ZIP selecionado.")
+            return
+
+        if attachment_size <= 0:
+            attachment_size = len(file_bytes)
+
+        attachment_data = base64.b64encode(file_bytes).decode("ascii")
+
+        page.pubsub.send_all_on_topic(
+            stored_room_name,
+            Message(
+                user_name=stored_user_name,
+                text="",
+                message_type="chat_message",
+                room_name=stored_room_name,
+                message_id=uuid.uuid4().hex,
+                tab_id=tab_id,
+                reaction_users={key: [] for key in REACTIONS},
+                attachment_name=attachment_name,
+                attachment_mime="application/zip",
+                attachment_data=attachment_data,
+                attachment_size=attachment_size,
+            ),
+        )
+        page.update()
 
     # Controlo de mensagem (formatação diferente para mensagens de chat e de sistema)
     def message_control(message: Message):
         if message.message_type == "chat_message":
             ensure_reactions(message)
-            return ChatMessage(message, on_react=react)
+            attachment_preview = build_attachment_preview(message)
+            return ChatMessage(message, on_react=react, attachment_preview=attachment_preview)
         return ft.Text(
             message.text,
             style=ft.TextStyle(italic=True),
@@ -438,9 +687,15 @@ def main(page: ft.Page):
                     room_name=topic_name,
                     message_id=str(message.get("message_id") or uuid.uuid4().hex),
                     tab_id=str(message.get("tab_id") or ""),
+                    target_message_id=str(message.get("target_message_id") or ""),
                     reaction_request_id=str(message.get("reaction_request_id") or ""),
                     reaction_type=str(message.get("reaction_type") or ""),
+                    reaction_action=str(message.get("reaction_action") or ""),
                     reaction_users={k: list(v) for k, v in dict(message.get("reaction_users") or {}).items()},
+                    attachment_name=str(message.get("attachment_name") or ""),
+                    attachment_mime=str(message.get("attachment_mime") or ""),
+                    attachment_data=str(message.get("attachment_data") or ""),
+                    attachment_size=int(message.get("attachment_size") or 0),
                 )
             )
 
@@ -488,9 +743,15 @@ def main(page: ft.Page):
                 room_name=topic_name,
                 message_id=message.message_id or uuid.uuid4().hex,
                 tab_id=message.tab_id,
+                target_message_id=message.target_message_id,
                 reaction_request_id=message.reaction_request_id,
                 reaction_type=message.reaction_type,
+                reaction_action=message.reaction_action,
                 reaction_users=message.reaction_users,
+                attachment_name=message.attachment_name,
+                attachment_mime=message.attachment_mime,
+                attachment_data=message.attachment_data,
+                attachment_size=message.attachment_size,
             )
 
         if message.message_type == "chat_message":
@@ -562,6 +823,10 @@ def main(page: ft.Page):
 
     page.overlay.append(welcome_dlg)
     page.overlay.append(create_room_dlg)
+    page.overlay.append(image_preview_dlg)
+    file_picker = ft.FilePicker()
+    page.services.append(file_picker)
+    page.update()
 
     create_room_btn = ft.IconButton(
         icon=ft.Icons.ADD_BOX_ROUNDED,
@@ -615,6 +880,16 @@ def main(page: ft.Page):
         ft.Row(
             controls=[
                 new_message,
+                ft.IconButton(
+                    icon=ft.Icons.IMAGE_OUTLINED,
+                    tooltip="Anexar imagem",
+                    on_click=send_image_attachment,
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.ATTACH_FILE,
+                    tooltip="Anexar ZIP",
+                    on_click=send_zip_attachment,
+                ),
                 ft.IconButton(
                     icon=ft.Icons.SEND_ROUNDED,
                     tooltip="Enviar mensagem",
