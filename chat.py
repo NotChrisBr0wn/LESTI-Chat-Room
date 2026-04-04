@@ -77,6 +77,11 @@ REACTIONS = {
     "cool": "👍",
 }
 
+EMOJI_SHORTCUTS = [
+    "😀", "😁", "😂", "🤣", "😊", "😍", "😎", "🤔", "😢", "😭",
+    "😡", "👍", "👎", "👏", "🙏", "🔥", "💯", "🎉", "❤️", "💡",
+]
+
 AVATAR_COLORS = [
     ft.Colors.AMBER,
     ft.Colors.BLUE,
@@ -1779,6 +1784,10 @@ def main(page: ft.Page):
         on_submit=send_message_click,
     )
 
+    def insert_emoji(emoji: str):
+        new_message.value = f"{new_message.value or ''}{emoji}"
+        page.update()
+
     welcome_dlg = ft.AlertDialog(
         open=False,
         modal=True,
@@ -1809,6 +1818,28 @@ def main(page: ft.Page):
             ft.TextButton("Cancelar", on_click=lambda e: close_create_room_dlg()),
             ft.TextButton("Criar", on_click=create_room_click),
         ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+
+    emoji_picker_dlg = ft.AlertDialog(
+        open=False,
+        modal=False,
+        title=ft.Text("Emojis"),
+        content=ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.TextButton(emoji, on_click=lambda _e, value=emoji: insert_emoji(value))
+                        for emoji in EMOJI_SHORTCUTS
+                    ],
+                    wrap=True,
+                    spacing=4,
+                )
+            ],
+            width=360,
+            tight=True,
+        ),
+        actions=[ft.TextButton("Fechar", on_click=lambda _: close_dialog(emoji_picker_dlg))],
         actions_alignment=ft.MainAxisAlignment.END,
     )
 
@@ -1887,6 +1918,7 @@ def main(page: ft.Page):
     page.overlay.append(welcome_dlg)
     page.overlay.append(create_room_dlg)
     page.overlay.append(dm_dlg)
+    page.overlay.append(emoji_picker_dlg)
     page.overlay.append(image_preview_dlg)
     page.overlay.append(message_actions_dlg)
     page.overlay.append(edit_message_dlg)
@@ -2032,6 +2064,11 @@ def main(page: ft.Page):
                                 content=ft.Row(
                                     controls=[
                                         new_message,
+                                        ft.IconButton(
+                                            icon=ft.Icons.EMOJI_EMOTIONS_OUTLINED,
+                                            tooltip="Inserir emoji",
+                                            on_click=lambda _: open_dialog(emoji_picker_dlg),
+                                        ),
                                         ft.IconButton(
                                             icon=ft.Icons.IMAGE_OUTLINED,
                                             tooltip="Anexar imagem",
