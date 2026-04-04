@@ -113,6 +113,9 @@ def avatar_color_for_user(user_name: str) -> str:
     index = int(digest[:8], 16) % len(AVATAR_COLORS)
     return AVATAR_COLORS[index]
 
+
+MOBILE_LAYOUT_BREAKPOINT = 900
+
 @ft.control
 class ChatMessage(ft.Row):
     def __init__(
@@ -243,6 +246,8 @@ def main(page: ft.Page):
     left_nav_mode = "rooms"
     history_loaded = False
     current_chat_background = ""
+    current_layout_mode = "desktop"
+    mobile_active_panel = "chat"
     dm_recipient_input = ft.TextField(label="Mensagem privada", multiline=True, min_lines=1, max_lines=4)
     login_feedback = ft.Text("", color=ft.Colors.RED_300, size=12)
     
@@ -2234,6 +2239,60 @@ def main(page: ft.Page):
         center_panel_shell.bgcolor = panel_glass_bg
         right_panel_shell.bgcolor = panel_glass_bg
 
+    def set_mobile_panel(panel_name: str):
+        nonlocal mobile_active_panel
+        mobile_active_panel = panel_name if panel_name in {"rooms", "chat", "users"} else "chat"
+
+        mobile_rooms_btn.style = ft.ButtonStyle(
+            bgcolor=ft.Colors.BLUE_400 if mobile_active_panel == "rooms" else ft.Colors.GREY_800,
+            color=ft.Colors.WHITE,
+            padding=8,
+        )
+        mobile_chat_btn.style = ft.ButtonStyle(
+            bgcolor=ft.Colors.BLUE_400 if mobile_active_panel == "chat" else ft.Colors.GREY_800,
+            color=ft.Colors.WHITE,
+            padding=8,
+        )
+        mobile_users_btn.style = ft.ButtonStyle(
+            bgcolor=ft.Colors.BLUE_400 if mobile_active_panel == "users" else ft.Colors.GREY_800,
+            color=ft.Colors.WHITE,
+            padding=8,
+        )
+
+        mobile_panel_container.content = {
+            "rooms": left_panel_shell,
+            "chat": center_panel_shell,
+            "users": right_panel_shell,
+        }[mobile_active_panel]
+
+    def update_layout_mode(width: float | None = None):
+        nonlocal current_layout_mode
+        current_width = float(width or page.width or 0)
+        new_mode = "mobile" if current_width and current_width < MOBILE_LAYOUT_BREAKPOINT else "desktop"
+        current_layout_mode = new_mode
+
+        is_mobile = current_layout_mode == "mobile"
+        desktop_layout.visible = not is_mobile
+        mobile_layout.visible = is_mobile
+
+        if is_mobile:
+            left_panel_shell.width = None
+            center_panel_shell.width = None
+            right_panel_shell.width = None
+            left_panel_shell.expand = False
+            center_panel_shell.expand = True
+            right_panel_shell.expand = False
+            set_mobile_panel(mobile_active_panel)
+        else:
+            left_panel_shell.width = 260
+            center_panel_shell.width = None
+            right_panel_shell.width = 270
+            left_panel_shell.expand = False
+            center_panel_shell.expand = 5
+            right_panel_shell.expand = False
+
+        page.update()
+
     def toggle_theme(_):
         is_dark = page.theme_mode != ft.ThemeMode.LIGHT
         page.theme_mode = ft.ThemeMode.LIGHT if is_dark else ft.ThemeMode.DARK
@@ -2309,7 +2368,6 @@ def main(page: ft.Page):
 
     page.overlay.append(settings_dlg)
     update_theme_button_visual()
-    page.on_resize = sync_background_size
     sync_background_size()
 
     def bootstrap_session_state():
@@ -2492,37 +2550,73 @@ def main(page: ft.Page):
         width=270,
     )
 
+    mobile_rooms_btn = ft.TextButton("Salas", on_click=lambda _: set_mobile_panel("rooms"))
+    mobile_chat_btn = ft.TextButton("Chat", on_click=lambda _: set_mobile_panel("chat"))
+    mobile_users_btn = ft.TextButton("Utilizadores", on_click=lambda _: set_mobile_panel("users"))
+    mobile_nav_row = ft.Row(
+        controls=[mobile_rooms_btn, mobile_chat_btn, mobile_users_btn],
+        spacing=6,
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+    )
+    mobile_panel_container = ft.Container(expand=True)
+
+    desktop_layout = ft.Column(
+        controls=[
+            ft.Row(
+                controls=[
+                    ft.Text("DiscirdApp", size=30, weight=ft.FontWeight.BOLD),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            ft.Row(
+                controls=[
+                    left_panel_shell,
+                    center_panel_shell,
+                    right_panel_shell,
+                ],
+                expand=True,
+                spacing=10,
+            ),
+        ],
+        expand=True,
+    )
+
+    mobile_layout = ft.Column(
+        controls=[
+            ft.Row(
+                controls=[
+                    ft.Text("DiscirdApp", size=24, weight=ft.FontWeight.BOLD),
+                    ft.Container(expand=True),
+                    theme_toggle_btn,
+                    settings_btn,
+                ],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            room_badge,
+            mobile_nav_row,
+            mobile_panel_container,
+        ],
+        spacing=10,
+        expand=True,
+        visible=False,
+    )
+
     apply_glass_theme_colors()
 
     page.add(
         ft.Stack(
             controls=[
                 chat_background_image,
-                ft.Column(
-                    controls=[
-                        ft.Row(
-                            controls=[
-                                ft.Text("DiscirdApp", size=30, weight=ft.FontWeight.BOLD),
-                            ],
-                            alignment=ft.MainAxisAlignment.CENTER,
-                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        ),
-                        ft.Row(
-                            controls=[
-                                left_panel_shell,
-                                center_panel_shell,
-                                right_panel_shell,
-                            ],
-                            expand=True,
-                            spacing=10,
-                        ),
-                    ],
-                    expand=True,
-                ),
+                desktop_layout,
+                mobile_layout,
             ],
             expand=True,
         )
     )
+
+    page.on_resize = lambda e: (sync_background_size(e), update_layout_mode(getattr(e, "width", None)))
+    update_layout_mode(page.width)
 
 
 if __name__ == "__main__":
@@ -2530,8 +2624,8 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "60123"))
 
     # For cloud deploys (Fly.io/Replit), set HOST=0.0.0.0 and PORT via env.
-    ft.app(
-        target=main,
+    ft.run(
+        main=main,
         view=ft.AppView.WEB_BROWSER,
         host=host,
         port=port,
