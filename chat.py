@@ -494,6 +494,14 @@ def main(page: ft.Page):
                 padding=ft.Padding.symmetric(horizontal=6, vertical=2),
                 visible=unread > 0,
             )
+            badge_slot = ft.Container(
+                width=34,
+                content=ft.Row(
+                    controls=[badge],
+                    alignment=ft.MainAxisAlignment.END,
+                    tight=True,
+                ),
+            )
             peer_avatar = ft.CircleAvatar()
             peer_avatar.radius = 12
             peer_avatar.content = ft.Text(peer[:1].upper() if peer else "?", size=10)
@@ -505,9 +513,17 @@ def main(page: ft.Page):
                     content=ft.Row(
                         controls=[
                             peer_avatar,
-                            ft.Text(peer, weight=ft.FontWeight.W_500),
-                            ft.Container(expand=True),
-                            badge,
+                            ft.Container(
+                                content=ft.Text(
+                                    peer,
+                                    weight=ft.FontWeight.W_500,
+                                    max_lines=1,
+                                    overflow=ft.TextOverflow.ELLIPSIS,
+                                ),
+                                tooltip=peer,
+                                expand=True,
+                            ),
+                            badge_slot,
                         ],
                         alignment=ft.MainAxisAlignment.START,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
