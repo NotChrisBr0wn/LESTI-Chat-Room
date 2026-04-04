@@ -553,6 +553,14 @@ def main(page: ft.Page):
         refresh_dm_sidebar()
         page.update()
 
+    def open_dm_from_notification(peer_name: str):
+        peer = (peer_name or "").strip()
+        if not peer:
+            return
+        dm_snackbar.open = False
+        show_left_nav("dms")
+        open_dm_thread(peer)
+
     def ensure_reactions(message: Message):
         for reaction_key in REACTIONS:
             if reaction_key not in message.reaction_users:
@@ -1371,7 +1379,7 @@ def main(page: ft.Page):
                         controls=[
                             ft.Icon(ft.Icons.MAIL, color=ft.Colors.BLUE_400),
                             ft.Text(f"Mensagem privada de {sender_name}"),
-                            ft.TextButton("Ver", on_click=lambda _: open_dm_dialog(sender_name)),
+                            ft.TextButton("Ver", on_click=lambda _: open_dm_from_notification(sender_name)),
                         ],
                         spacing=10,
                     )
@@ -1533,7 +1541,7 @@ def main(page: ft.Page):
                     controls=[
                         ft.Icon(ft.Icons.MAIL, color=ft.Colors.BLUE_400),
                         ft.Text(f"Mensagem privada de {message.user_name}"),
-                        ft.TextButton("Ver", on_click=lambda _: open_dm_dialog(message.user_name)),
+                        ft.TextButton("Ver", on_click=lambda _: open_dm_from_notification(message.user_name)),
                     ],
                     spacing=10,
                 )
@@ -1899,7 +1907,36 @@ def main(page: ft.Page):
                     width=260,
                 ),
                 ft.Container(
-                    content=chat,
+                    content=ft.Column(
+                        controls=[
+                            chat,
+                            ft.Container(
+                                content=ft.Row(
+                                    controls=[
+                                        new_message,
+                                        ft.IconButton(
+                                            icon=ft.Icons.IMAGE_OUTLINED,
+                                            tooltip="Anexar imagem",
+                                            on_click=send_image_attachment,
+                                        ),
+                                        ft.IconButton(
+                                            icon=ft.Icons.ATTACH_FILE,
+                                            tooltip="Anexar ZIP",
+                                            on_click=send_zip_attachment,
+                                        ),
+                                        ft.IconButton(
+                                            icon=ft.Icons.SEND_ROUNDED,
+                                            tooltip="Enviar mensagem",
+                                            on_click=send_message_click,
+                                        ),
+                                    ]
+                                ),
+                                padding=ft.Padding.only(top=8),
+                            ),
+                        ],
+                        expand=True,
+                        spacing=0,
+                    ),
                     border=ft.Border.all(1, ft.Colors.OUTLINE),
                     border_radius=5,
                     padding=10,
@@ -1923,26 +1960,6 @@ def main(page: ft.Page):
             ],
             expand=True,
             spacing=10,
-        ),
-        ft.Row(
-            controls=[
-                new_message,
-                ft.IconButton(
-                    icon=ft.Icons.IMAGE_OUTLINED,
-                    tooltip="Anexar imagem",
-                    on_click=send_image_attachment,
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.ATTACH_FILE,
-                    tooltip="Anexar ZIP",
-                    on_click=send_zip_attachment,
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.SEND_ROUNDED,
-                    tooltip="Enviar mensagem",
-                    on_click=send_message_click,
-                ),
-            ]
         ),
     )
 
