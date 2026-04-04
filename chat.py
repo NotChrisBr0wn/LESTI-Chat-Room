@@ -482,6 +482,7 @@ def main(page: ft.Page):
         ordered_peers = sorted(peers, key=str.lower)
         if not ordered_peers:
             dm_col.controls.append(ft.Text("Sem DMs", size=12, color=ft.Colors.WHITE_54))
+            update_dm_tab_badge()
             return
 
         for peer in ordered_peers:
@@ -520,6 +521,13 @@ def main(page: ft.Page):
                 )
             )
 
+        update_dm_tab_badge()
+
+    def update_dm_tab_badge():
+        total_unread = sum(max(0, int(count)) for count in dm_unread_by_user.values())
+        dm_tab_badge_text.value = str(total_unread)
+        dm_tab_badge.visible = total_unread > 0
+
     def refresh_left_sidebar():
         rooms_nav_panel.visible = left_nav_mode == "rooms"
         dms_nav_panel.visible = left_nav_mode == "dms"
@@ -552,14 +560,6 @@ def main(page: ft.Page):
         load_room_messages()
         refresh_dm_sidebar()
         page.update()
-
-    def open_dm_from_notification(peer_name: str):
-        peer = (peer_name or "").strip()
-        if not peer:
-            return
-        dm_snackbar.open = False
-        show_left_nav("dms")
-        open_dm_thread(peer)
 
     def ensure_reactions(message: Message):
         for reaction_key in REACTIONS:
@@ -1374,16 +1374,6 @@ def main(page: ft.Page):
                     refresh_dm_sidebar()
                     if selected_dm_user == sender_name:
                         load_room_messages()
-                    # Notificação de DM recebida
-                    dm_snackbar.content = ft.Row(
-                        controls=[
-                            ft.Icon(ft.Icons.MAIL, color=ft.Colors.BLUE_400),
-                            ft.Text(f"Mensagem privada de {sender_name}"),
-                            ft.TextButton("Ver", on_click=lambda _: open_dm_from_notification(sender_name)),
-                        ],
-                        spacing=10,
-                    )
-                    dm_snackbar.open = True
                     page.update()
                 return
             
@@ -1536,16 +1526,6 @@ def main(page: ft.Page):
                 refresh_dm_sidebar()
                 if selected_dm_user == message.user_name:
                     load_room_messages()
-                # Notificação de DM recebida
-                dm_snackbar.content = ft.Row(
-                    controls=[
-                        ft.Icon(ft.Icons.MAIL, color=ft.Colors.BLUE_400),
-                        ft.Text(f"Mensagem privada de {message.user_name}"),
-                        ft.TextButton("Ver", on_click=lambda _: open_dm_from_notification(message.user_name)),
-                    ],
-                    spacing=10,
-                )
-                dm_snackbar.open = True
                 page.update()
             return
 
@@ -1797,7 +1777,7 @@ def main(page: ft.Page):
     page.on_login = on_oauth_login
     page.update()
 
-    create_room_btn = ft.Button(
+    create_room_btn = ft.FilledButton(
         content=ft.Row(
             controls=[
                 ft.Icon(ft.Icons.ADD, size=16, color=ft.Colors.WHITE),
@@ -1876,8 +1856,27 @@ def main(page: ft.Page):
         width=260,
     )
 
+    dm_tab_badge_text = ft.Text("0", size=10, color=ft.Colors.WHITE)
+    dm_tab_badge = ft.Container(
+        content=dm_tab_badge_text,
+        bgcolor=ft.Colors.RED_500,
+        border_radius=10,
+        padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+        visible=False,
+    )
+
     room_tab_btn = ft.TextButton("Salas", on_click=lambda _: show_left_nav("rooms"))
-    dm_tab_btn = ft.TextButton("DMs", on_click=lambda _: show_left_nav("dms"))
+    dm_tab_btn = ft.TextButton(
+        content=ft.Row(
+            controls=[
+                ft.Text("DMs"),
+                dm_tab_badge,
+            ],
+            spacing=6,
+            tight=True,
+        ),
+        on_click=lambda _: show_left_nav("dms"),
+    )
     refresh_left_sidebar()
 
     page.add(
