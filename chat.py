@@ -98,6 +98,13 @@ AVATAR_COLORS = [
     ft.Colors.YELLOW,
 ]
 
+CHAT_BACKGROUND_PRESETS = [
+    ("", "Sem fundo"),
+    ("assets/social_life.png", "Social Life"),
+    ("assets/Medieval.png", "Medieval"),
+    ("assets/Medieval_Beach.png", "Medieval Beach"),
+]
+
 
 def avatar_color_for_user(user_name: str) -> str:
     normalized = (user_name or "").strip().lower() or "unknown"
@@ -221,6 +228,7 @@ def main(page: ft.Page):
     dm_unread_by_user: dict[str, int] = {}
     left_nav_mode = "rooms"
     history_loaded = False
+    current_chat_background = ""
     dm_recipient_input = ft.TextField(label="Mensagem privada", multiline=True, min_lines=1, max_lines=4)
     login_feedback = ft.Text("", color=ft.Colors.RED_300, size=12)
     
@@ -1129,9 +1137,12 @@ def main(page: ft.Page):
 
     def scroll_chat_to_latest():
         try:
-            asyncio.create_task(chat.scroll_to(offset=-1))
+            loop = asyncio.get_running_loop()
         except RuntimeError:
             pass
+            return
+
+        loop.create_task(chat.scroll_to(offset=-1))
         
     # Atualiza painel central conforme o contexto
     def load_room_messages():
@@ -1768,7 +1779,7 @@ def main(page: ft.Page):
         auto_scroll=True,
     )
 
-    room_badge = ft.Text("Sala atual: (não selecionada)", size=12, color=ft.Colors.WHITE_70)
+    room_badge = ft.Text("Sala atual: (não selecionada)", size=11, color=ft.Colors.WHITE_70)
     rooms_col = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
     dm_col = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
     users_col = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -1948,6 +1959,92 @@ def main(page: ft.Page):
         ),
     )
 
+    chat_background_image = ft.Image(
+        src="",
+        fit=ft.BoxFit.COVER,
+        visible=False,
+        expand=True,
+    )
+
+    def apply_chat_background(path: str):
+        nonlocal current_chat_background
+        current_chat_background = (path or "").strip()
+        chat_background_image.src = current_chat_background
+        chat_background_image.visible = bool(current_chat_background)
+        page.update()
+
+    def update_theme_button_visual():
+        is_dark = page.theme_mode != ft.ThemeMode.LIGHT
+        theme_toggle_btn.icon = ft.Icons.LIGHT_MODE_OUTLINED if is_dark else ft.Icons.DARK_MODE_OUTLINED
+        theme_toggle_btn.tooltip = "Tema claro" if is_dark else "Tema escuro"
+
+    def toggle_theme(_):
+        is_dark = page.theme_mode != ft.ThemeMode.LIGHT
+        page.theme_mode = ft.ThemeMode.LIGHT if is_dark else ft.ThemeMode.DARK
+        update_theme_button_visual()
+        page.update()
+
+    def logout_click(_):
+        nonlocal active_user_name, login_bootstrapped, selected_dm_user
+
+        try:
+            logout_result = page.logout()
+            if asyncio.iscoroutine(logout_result):
+                asyncio.create_task(logout_result)
+        except Exception:
+            pass
+
+        active_user_name = ""
+        login_bootstrapped = False
+        selected_dm_user = ""
+        page.session.store.set("user_name", "")
+        new_message.value = ""
+        new_message.disabled = True
+        create_room_btn.disabled = True
+        room_badge.value = "Sala atual: sem sessão"
+        chat.controls.clear()
+        close_dialog(settings_dlg)
+        open_dialog(welcome_dlg)
+
+    theme_toggle_btn = ft.IconButton(
+        icon=ft.Icons.DARK_MODE_OUTLINED,
+        tooltip="Alternar tema",
+        on_click=toggle_theme,
+    )
+    settings_btn = ft.IconButton(
+        icon=ft.Icons.SETTINGS_ROUNDED,
+        tooltip="Definições",
+        on_click=lambda _: open_dialog(settings_dlg),
+    )
+
+    settings_dlg = ft.AlertDialog(
+        open=False,
+        modal=True,
+        title=ft.Text("Definições"),
+        content=ft.Column(
+            controls=[
+                ft.Text("Imagem de fundo da conversa", weight=ft.FontWeight.W_600),
+                ft.Row(
+                    controls=[
+                        ft.TextButton(label, on_click=lambda _e, value=path: apply_chat_background(value))
+                        for path, label in CHAT_BACKGROUND_PRESETS
+                    ],
+                    wrap=True,
+                    spacing=6,
+                ),
+                ft.Divider(height=10),
+                ft.TextButton("Terminar sessão", on_click=logout_click),
+            ],
+            width=430,
+            tight=True,
+        ),
+        actions=[ft.TextButton("Fechar", on_click=lambda _: close_dialog(settings_dlg))],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+
+    page.overlay.append(settings_dlg)
+    update_theme_button_visual()
+
     def bootstrap_session_state():
         nonlocal active_user_name
         stored_user_name = valid_user_name()
@@ -2033,18 +2130,25 @@ def main(page: ft.Page):
     page.add(
         ft.Row(
             controls=[
-                ft.Text("DiscirdApp", size=16, weight=ft.FontWeight.BOLD),
+                ft.Text("DiscirdApp", size=30, weight=ft.FontWeight.BOLD),
             ],
-            alignment=ft.MainAxisAlignment.START,
+            alignment=ft.MainAxisAlignment.CENTER,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
-        room_badge,
         ft.Row(
             controls=[
                 ft.Container(
                     content=ft.Column(
                         controls=[
-                            ft.Row(controls=[room_tab_btn, dm_tab_btn], spacing=8),
+                            ft.Row(
+                                controls=[
+                                    room_tab_btn,
+                                    dm_tab_btn,
+                                    ft.Container(content=room_badge, expand=True),
+                                ],
+                                spacing=8,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
                             rooms_nav_panel,
                             dms_nav_panel,
                         ],
@@ -2057,40 +2161,46 @@ def main(page: ft.Page):
                     width=260,
                 ),
                 ft.Container(
-                    content=ft.Column(
+                    content=ft.Stack(
                         controls=[
-                            chat,
-                            ft.Container(
-                                content=ft.Row(
-                                    controls=[
-                                        new_message,
-                                        ft.IconButton(
-                                            icon=ft.Icons.EMOJI_EMOTIONS_OUTLINED,
-                                            tooltip="Inserir emoji",
-                                            on_click=lambda _: open_dialog(emoji_picker_dlg),
+                            chat_background_image,
+                            ft.Column(
+                                controls=[
+                                    chat,
+                                    ft.Container(
+                                        content=ft.Row(
+                                            controls=[
+                                                new_message,
+                                                ft.IconButton(
+                                                    icon=ft.Icons.EMOJI_EMOTIONS_OUTLINED,
+                                                    tooltip="Inserir emoji",
+                                                    on_click=lambda _: open_dialog(emoji_picker_dlg),
+                                                ),
+                                                ft.IconButton(
+                                                    icon=ft.Icons.IMAGE_OUTLINED,
+                                                    tooltip="Anexar imagem",
+                                                    on_click=send_image_attachment,
+                                                ),
+                                                ft.IconButton(
+                                                    icon=ft.Icons.ATTACH_FILE,
+                                                    tooltip="Anexar ZIP",
+                                                    on_click=send_zip_attachment,
+                                                ),
+                                                ft.IconButton(
+                                                    icon=ft.Icons.SEND_ROUNDED,
+                                                    tooltip="Enviar mensagem",
+                                                    on_click=send_message_click,
+                                                ),
+                                            ]
                                         ),
-                                        ft.IconButton(
-                                            icon=ft.Icons.IMAGE_OUTLINED,
-                                            tooltip="Anexar imagem",
-                                            on_click=send_image_attachment,
-                                        ),
-                                        ft.IconButton(
-                                            icon=ft.Icons.ATTACH_FILE,
-                                            tooltip="Anexar ZIP",
-                                            on_click=send_zip_attachment,
-                                        ),
-                                        ft.IconButton(
-                                            icon=ft.Icons.SEND_ROUNDED,
-                                            tooltip="Enviar mensagem",
-                                            on_click=send_message_click,
-                                        ),
-                                    ]
-                                ),
-                                padding=ft.Padding.only(top=8),
+                                        padding=ft.Padding.only(top=8),
+                                    ),
+                                ],
+                                expand=True,
+                                spacing=0,
                             ),
                         ],
                         expand=True,
-                        spacing=0,
                     ),
                     border=ft.Border.all(1, ft.Colors.OUTLINE),
                     border_radius=5,
@@ -2100,7 +2210,16 @@ def main(page: ft.Page):
                 ft.Container(
                     content=ft.Column(
                         controls=[
-                            ft.Text("Utilizadores na sala", weight=ft.FontWeight.BOLD, size=14),
+                            ft.Row(
+                                controls=[
+                                    ft.Text("Utilizadores na sala", weight=ft.FontWeight.BOLD, size=14),
+                                    ft.Container(expand=True),
+                                    theme_toggle_btn,
+                                    settings_btn,
+                                ],
+                                spacing=2,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
                             ft.Divider(height=8),
                             users_col,
                         ],
@@ -2119,4 +2238,4 @@ def main(page: ft.Page):
     )
 
 
-ft.run(main, host="127.0.0.1", port=60123)
+ft.run(main, host="127.0.0.1", port=60123, assets_dir="assets")
