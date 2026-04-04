@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 import asyncio
 import base64
 import hashlib
+import json
 import mimetypes
 import os
 import uuid
@@ -35,6 +36,8 @@ if _GOOGLE_REDIRECT_URL_RAW and not _GOOGLE_REDIRECT_URL_RAW.rstrip("/").endswit
     GOOGLE_REDIRECT_URL = _GOOGLE_REDIRECT_URL_RAW.rstrip("/") + "/oauth_callback"
 else:
     GOOGLE_REDIRECT_URL = _GOOGLE_REDIRECT_URL_RAW
+
+HISTORY_FILE = Path(__file__).resolve().with_name("chat_history.json")
 
 
 @dataclass
@@ -204,6 +207,7 @@ def main(page: ft.Page):
     selected_dm_user = ""
     dm_unread_by_user: dict[str, int] = {}
     left_nav_mode = "rooms"
+    history_loaded = False
     dm_recipient_input = ft.TextField(label="Mensagem privada", multiline=True, min_lines=1, max_lines=4)
     login_feedback = ft.Text("", color=ft.Colors.RED_300, size=12)
     
@@ -255,6 +259,55 @@ def main(page: ft.Page):
     def normalize_room_name(value: str) -> str:
         return (value or "").strip().lower()
 
+    def message_to_dict(message: Message) -> dict:
+        return {
+            "user_name": message.user_name,
+            "text": message.text,
+            "message_type": message.message_type,
+            "room_name": message.room_name,
+            "message_id": message.message_id,
+            "tab_id": message.tab_id,
+            "target_message_id": message.target_message_id,
+            "reaction_request_id": message.reaction_request_id,
+            "reaction_type": message.reaction_type,
+            "reaction_action": message.reaction_action,
+            "reaction_users": {k: list(v) for k, v in message.reaction_users.items()},
+            "attachment_name": message.attachment_name,
+            "attachment_mime": message.attachment_mime,
+            "attachment_data": message.attachment_data,
+            "attachment_size": message.attachment_size,
+            "edited": message.edited,
+            "deleted_for_all": message.deleted_for_all,
+            "recipient_name": message.recipient_name,
+        }
+
+    def message_from_dict(raw: dict, fallback_room: str = "") -> Message:
+        reaction_users_raw = dict(raw.get("reaction_users") or {})
+        reaction_users: dict[str, list[str]] = {}
+        for key, values in reaction_users_raw.items():
+            reaction_users[str(key)] = [str(value) for value in list(values or [])]
+
+        return Message(
+            user_name=str(raw.get("user_name") or "Unk"),
+            text=str(raw.get("text") or ""),
+            message_type=str(raw.get("message_type") or "chat_message"),
+            room_name=str(raw.get("room_name") or fallback_room or ""),
+            message_id=str(raw.get("message_id") or uuid.uuid4().hex),
+            tab_id=str(raw.get("tab_id") or ""),
+            target_message_id=str(raw.get("target_message_id") or ""),
+            reaction_request_id=str(raw.get("reaction_request_id") or ""),
+            reaction_type=str(raw.get("reaction_type") or ""),
+            reaction_action=str(raw.get("reaction_action") or ""),
+            reaction_users=reaction_users,
+            attachment_name=str(raw.get("attachment_name") or ""),
+            attachment_mime=str(raw.get("attachment_mime") or ""),
+            attachment_data=str(raw.get("attachment_data") or ""),
+            attachment_size=int(raw.get("attachment_size") or 0),
+            edited=bool(raw.get("edited") or False),
+            deleted_for_all=bool(raw.get("deleted_for_all") or False),
+            recipient_name=str(raw.get("recipient_name") or ""),
+        )
+
     def init_room_users(room_name: str):
         if room_name not in room_users_by_room:
             room_users_by_room[room_name] = set()
@@ -266,6 +319,111 @@ def main(page: ft.Page):
             return
         init_room_users(room)
         room_users_by_room[room].add(user)
+
+    def persist_history():
+        payload = {
+            "version": 1,
+            "rooms": sorted(set(rooms), key=str.lower),
+            "room_history": {
+                room_name: [message_to_dict(msg) for msg in messages]
+                for room_name, messages in room_history.items()
+            },
+            "dm_conversations": {
+                dm_key: [message_to_dict(msg) for msg in messages]
+                for dm_key, messages in dm_conversations.items()
+            },
+            "hidden_message_ids_by_room": {
+                room_name: sorted(list(hidden_ids))
+                for room_name, hidden_ids in hidden_message_ids_by_room.items()
+            },
+        }
+
+        temp_file = HISTORY_FILE.with_suffix(".tmp")
+        try:
+            temp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temp_file.replace(HISTORY_FILE)
+        except OSError:
+            pass
+
+    def load_persisted_history():
+        nonlocal history_loaded
+        if history_loaded:
+            return
+
+        history_loaded = True
+        if not HISTORY_FILE.exists():
+            if "geral" not in rooms:
+                rooms.append("geral")
+            if "geral" not in room_history:
+                room_history["geral"] = []
+            init_room_users("geral")
+            init_hidden_ids("geral")
+            return
+
+        try:
+            raw_data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raw_data = {}
+
+        loaded_rooms = list(raw_data.get("rooms") or [])
+        for raw_room in loaded_rooms:
+            room = normalize_room_name(str(raw_room))
+            if not room:
+                continue
+            if room not in rooms:
+                rooms.append(room)
+            if room not in room_history:
+                room_history[room] = []
+            init_room_users(room)
+            init_hidden_ids(room)
+
+        loaded_room_history = dict(raw_data.get("room_history") or {})
+        for raw_room_name, raw_messages in loaded_room_history.items():
+            room_name = normalize_room_name(str(raw_room_name))
+            if not room_name:
+                continue
+            if room_name not in rooms:
+                rooms.append(room_name)
+            parsed_messages: list[Message] = []
+            for raw_message in list(raw_messages or []):
+                if isinstance(raw_message, dict):
+                    parsed_message = message_from_dict(raw_message, fallback_room=room_name)
+                    parsed_messages.append(parsed_message)
+                    if parsed_message.message_type in ("chat_message", "login_message"):
+                        track_room_user(room_name, parsed_message.user_name)
+            room_history[room_name] = parsed_messages
+            init_room_users(room_name)
+            init_hidden_ids(room_name)
+
+        loaded_dm_history = dict(raw_data.get("dm_conversations") or {})
+        for raw_dm_key, raw_messages in loaded_dm_history.items():
+            dm_key = str(raw_dm_key or "")
+            if not dm_key:
+                continue
+            parsed_messages: list[Message] = []
+            for raw_message in list(raw_messages or []):
+                if isinstance(raw_message, dict):
+                    parsed_messages.append(message_from_dict(raw_message))
+            dm_conversations[dm_key] = parsed_messages
+
+        loaded_hidden_ids = dict(raw_data.get("hidden_message_ids_by_room") or {})
+        for raw_room_name, raw_hidden_ids in loaded_hidden_ids.items():
+            room_name = normalize_room_name(str(raw_room_name))
+            if not room_name:
+                continue
+            init_hidden_ids(room_name)
+            hidden_message_ids_by_room[room_name] = {
+                str(message_id)
+                for message_id in list(raw_hidden_ids or [])
+                if str(message_id)
+            }
+
+        if "geral" not in rooms:
+            rooms.append("geral")
+        if "geral" not in room_history:
+            room_history["geral"] = []
+        init_room_users("geral")
+        init_hidden_ids("geral")
 
     # Atualiza membros visíveis da sala atual
     def refresh_users_sidebar():
@@ -467,6 +625,7 @@ def main(page: ft.Page):
         )
         editing_message_id = ""
         edit_message_input.value = ""
+        persist_history()
         close_edit_dlg()
 
     def hide_message(_):
@@ -477,6 +636,7 @@ def main(page: ft.Page):
 
         init_hidden_ids(stored_room_name)
         hidden_message_ids_by_room[stored_room_name].add(selected_message_id)
+        persist_history()
         selected_message_id = ""
         close_actions_dlg()
         load_room_messages()
@@ -905,6 +1065,7 @@ def main(page: ft.Page):
         if not room:
             return ""
 
+        was_new_room = room not in rooms
         if room not in rooms:
             rooms.append(room)
 
@@ -916,6 +1077,9 @@ def main(page: ft.Page):
             room_history[room] = []
         init_room_users(room)
         init_hidden_ids(room)
+
+        if was_new_room:
+            persist_history()
 
         update_rooms()
         return room
@@ -998,6 +1162,7 @@ def main(page: ft.Page):
         topic_subscription()
         # Subscrever ao tópico pessoal (para receber mensagens privadas)
         ensure_private_subscription(user_name)
+        load_persisted_history()
         
         default_room = verify_room("geral")
         switch_room(default_room)
@@ -1131,6 +1296,7 @@ def main(page: ft.Page):
             if dm_key not in dm_conversations:
                 dm_conversations[dm_key] = []
             dm_conversations[dm_key].append(msg)
+            persist_history()
             page.pubsub.send_all_on_topic(selected_dm_user, msg)
             load_room_messages()
             refresh_dm_sidebar()
@@ -1194,6 +1360,7 @@ def main(page: ft.Page):
                             reaction_users={key: [] for key in REACTIONS},
                         )
                     )
+                    persist_history()
                     if selected_dm_user != sender_name:
                         dm_unread_by_user[sender_name] = dm_unread_by_user.get(sender_name, 0) + 1
                     refresh_dm_sidebar()
@@ -1214,6 +1381,7 @@ def main(page: ft.Page):
             
             if message_type == "room_created":
                 verify_room(message_room)
+                persist_history()
                 page.update()
                 return
 
@@ -1264,6 +1432,8 @@ def main(page: ft.Page):
                             add_reaction(existing_message, reacting_tab_id, reaction_key)
                         break
 
+                persist_history()
+
                 if topic_name == current_room:
                     load_room_messages()
                     page.update()
@@ -1280,6 +1450,7 @@ def main(page: ft.Page):
                 ):
                     target_message.text = new_text
                     target_message.edited = True
+                    persist_history()
                 if topic_name == current_room:
                     load_room_messages()
                     page.update()
@@ -1300,6 +1471,7 @@ def main(page: ft.Page):
                     target_message.attachment_size = 0
                     target_message.edited = False
                     target_message.deleted_for_all = True
+                    persist_history()
                 if topic_name == current_room:
                     load_room_messages()
                     page.update()
@@ -1326,6 +1498,7 @@ def main(page: ft.Page):
                     deleted_for_all=bool(message.get("deleted_for_all") or False),
                 )
             )
+            persist_history()
 
             if topic_name == current_room:
                 last_msg = room_history[topic_name][-1]
@@ -1338,6 +1511,7 @@ def main(page: ft.Page):
         message_room = getattr(message, "room_name", "")
         if message.message_type == "room_created":
             verify_room(message_room)
+            persist_history()
             page.update()
             return
 
@@ -1348,6 +1522,7 @@ def main(page: ft.Page):
                 if dm_key not in dm_conversations:
                     dm_conversations[dm_key] = []
                 dm_conversations[dm_key].append(message)
+                persist_history()
                 if selected_dm_user != message.user_name:
                     dm_unread_by_user[message.user_name] = dm_unread_by_user.get(message.user_name, 0) + 1
                 refresh_dm_sidebar()
@@ -1408,6 +1583,8 @@ def main(page: ft.Page):
                         add_reaction(existing_message, message.tab_id, message.reaction_type)
                     break
 
+            persist_history()
+
             if topic_name == current_room:
                 load_room_messages()
                 page.update()
@@ -1418,6 +1595,7 @@ def main(page: ft.Page):
             if target_message and can_manage(message.user_name, message.tab_id, target_message):
                 target_message.text = message.text
                 target_message.edited = True
+                persist_history()
             if topic_name == current_room:
                 load_room_messages()
                 page.update()
@@ -1433,6 +1611,7 @@ def main(page: ft.Page):
                 target_message.attachment_size = 0
                 target_message.edited = False
                 target_message.deleted_for_all = True
+                persist_history()
             if topic_name == current_room:
                 load_room_messages()
                 page.update()
@@ -1463,6 +1642,7 @@ def main(page: ft.Page):
             ensure_reactions(message)
 
         room_history[topic_name].append(message)
+        persist_history()
 
         if topic_name == current_room and not is_hidden(topic_name, message.message_id):
             chat.controls.append(message_control(message))
@@ -1569,6 +1749,7 @@ def main(page: ft.Page):
         if dm_key not in dm_conversations:
             dm_conversations[dm_key] = []
         dm_conversations[dm_key].append(msg)
+        persist_history()
         
         # Enviar para o destinatário
         page.pubsub.send_all_on_topic(current_dm_user, msg)
@@ -1608,7 +1789,7 @@ def main(page: ft.Page):
     page.on_login = on_oauth_login
     page.update()
 
-    create_room_btn = ft.ElevatedButton(
+    create_room_btn = ft.Button(
         content=ft.Row(
             controls=[
                 ft.Icon(ft.Icons.ADD, size=16, color=ft.Colors.WHITE),
@@ -1623,7 +1804,7 @@ def main(page: ft.Page):
         style=ft.ButtonStyle(
             bgcolor=ft.Colors.BLUE_500,
             color=ft.Colors.WHITE,
-            padding=ft.padding.symmetric(horizontal=12, vertical=10),
+            padding=ft.Padding.symmetric(horizontal=12, vertical=10),
             shape=ft.RoundedRectangleBorder(radius=10),
         ),
     )
@@ -1645,6 +1826,7 @@ def main(page: ft.Page):
 
         topic_subscription()
         ensure_private_subscription(stored_user_name)
+        load_persisted_history()
 
         stored_room_name = page.session.store.get("room_name")
         if not isinstance(stored_room_name, str) or not stored_room_name.strip():

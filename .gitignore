@@ -15,3 +15,6 @@ client_secret*.json
 oauth_client*.json
 google_oauth*.json
 credentials*.json
+
+# Dados locais da app
+chat_history.json
