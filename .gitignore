@@ -3,3 +3,15 @@ venv/
 __pycache__/
 *.pyc
 *.pyo
+
+# Segredos e configuração local
+auth.env
+.env
+.env.*
+!.env.example
+
+# Credenciais OAuth locais
+client_secret*.json
+oauth_client*.json
+google_oauth*.json
+credentials*.json

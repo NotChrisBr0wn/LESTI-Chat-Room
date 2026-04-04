@@ -5,11 +5,16 @@ import os
 import uuid
 
 import flet as ft
+from flet.auth.providers import GoogleOAuthProvider
 
 # Limites para anexos (20MB total, 750KB para anexos inline, 5MB para imagens inline)
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_INLINE_ATTACHMENT_BYTES = 750_000
 MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
+GOOGLE_REDIRECT_URL = os.getenv("GOOGLE_REDIRECT_URL", "").strip()
 
 
 @dataclass
@@ -169,6 +174,7 @@ def main(page: ft.Page):
     selected_dm_user = ""
     dm_unread_by_user: dict[str, int] = {}
     dm_recipient_input = ft.TextField(label="Mensagem privada", multiline=True, min_lines=1, max_lines=4)
+    login_feedback = ft.Text("", color=ft.Colors.RED_300, size=12)
     
     # Snackbar para notificações
     dm_snackbar = ft.SnackBar(ft.Text(""), duration=5000)
@@ -183,9 +189,32 @@ def main(page: ft.Page):
         page.update()
     
     # Valida o nome de utilizador atraves do armazenamento da sessão, garantindo que é uma string não vazia    
+    def auth_user_name() -> str:
+        auth = getattr(page, "auth", None)
+        if not auth:
+            return ""
+
+        user = getattr(auth, "user", None)
+        if isinstance(user, dict):
+            for key in ("name", "email", "given_name"):
+                value = str(user.get(key) or "").strip()
+                if value:
+                    return value
+            return ""
+
+        for attr in ("name", "email", "given_name"):
+            value = str(getattr(user, attr, "") or "").strip()
+            if value:
+                return value
+        return ""
+
     def valid_user_name() -> str:
         if active_user_name:
             return active_user_name
+
+        auth_name = auth_user_name()
+        if auth_name:
+            return auth_name
 
         stored_user_name = page.session.store.get("user_name")
         if isinstance(stored_user_name, str):
@@ -471,7 +500,7 @@ def main(page: ft.Page):
         content=ft.Column([edit_message_input], width=420, tight=True),
         actions=[
             ft.TextButton("Cancelar", on_click=lambda _: close_edit_dlg()),
-            ft.Button(content="Guardar", on_click=save_edit),
+            ft.TextButton("Guardar", on_click=save_edit),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     )
@@ -614,7 +643,7 @@ def main(page: ft.Page):
         # Valida o utilizador antes de enviar
         stored_user_name = valid_user_name()
         if not stored_user_name:
-            join_name.error = "Inicia sessão para enviar ficheiros."
+            login_feedback.value = "Inicia sessão para enviar ficheiros."
             open_dialog(welcome_dlg)
             return
 
@@ -687,7 +716,7 @@ def main(page: ft.Page):
 
         stored_user_name = valid_user_name()
         if not stored_user_name:
-            join_name.error = "Inicia sessão para enviar ficheiros."
+            login_feedback.value = "Inicia sessão com Google para enviar ficheiros."
             open_dialog(welcome_dlg)
             return
 
@@ -903,13 +932,13 @@ def main(page: ft.Page):
 
     def join_chat_click(e):
         nonlocal active_user_name
-        user_name = (join_name.value or "").strip()
+        user_name = valid_user_name()
         if not user_name:
-            join_name.error = "O nome não pode estar vazio."
+            login_feedback.value = "Não foi possível fazer login."
             page.update()
             return
 
-        join_name.error = None
+        login_feedback.value = ""
         active_user_name = user_name
         page.session.store.set("user_name", user_name)
         close_dialog(welcome_dlg)
@@ -932,6 +961,30 @@ def main(page: ft.Page):
         new_message.disabled = False
         create_room_btn.disabled = False
         page.update()
+
+    google_provider = None
+    if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URL:
+        google_provider = GoogleOAuthProvider(
+            client_id=GOOGLE_CLIENT_ID,
+            client_secret=GOOGLE_CLIENT_SECRET,
+            redirect_url=GOOGLE_REDIRECT_URL,
+        )
+
+    async def google_login_click(_):
+        if not google_provider:
+            login_feedback.value = "Configura GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET e GOOGLE_REDIRECT_URL."
+            page.update()
+            return
+
+        login_feedback.value = ""
+        await page.login(provider=google_provider)
+
+    def on_oauth_login(e):
+        if getattr(e, "error", ""):
+            login_feedback.value = f"Falha no login: {e.error}"
+            page.update()
+            return
+        join_chat_click(None)
 
     def create_room_click(e):
         if not is_logged_in():
@@ -991,7 +1044,7 @@ def main(page: ft.Page):
 
         stored_user_name = valid_user_name()
         if not stored_user_name:
-            join_name.error = "Inicia sessão para enviar mensagens."
+            login_feedback.value = "Inicia sessão com Google para enviar mensagens."
             open_dialog(welcome_dlg)
             return
 
@@ -1371,19 +1424,19 @@ def main(page: ft.Page):
         on_submit=send_message_click,
     )
 
-    # Caixa de dialogo que pede o nome de utilizador
-    join_name = ft.TextField(
-        label="Introduza o seu nome",
-        autofocus=True,
-        on_submit=join_chat_click,
-    )
-
     welcome_dlg = ft.AlertDialog(
         open=False,
         modal=True,
-        title=ft.Text("Login to use DiscirdApp!"),
-        content=ft.Column([join_name], width=300, tight=True),
-        actions=[ft.Button(content="Entrar", on_click=join_chat_click)],
+        title=ft.Text("Entrar com Google"),
+        content=ft.Column(
+            [
+                ft.Text("Autentica-te para usar a app."),
+                login_feedback,
+            ],
+            width=360,
+            tight=True,
+        ),
+        actions=[ft.TextButton("Continuar com Google", on_click=google_login_click)],
         actions_alignment=ft.MainAxisAlignment.END,
     )
 
@@ -1399,7 +1452,7 @@ def main(page: ft.Page):
         content=ft.Column([create_room_name], width=300, tight=True),
         actions=[
             ft.TextButton("Cancelar", on_click=lambda e: close_create_room_dlg()),
-            ft.Button(content="Criar", on_click=create_room_click),
+            ft.TextButton("Criar", on_click=create_room_click),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     )
@@ -1470,7 +1523,7 @@ def main(page: ft.Page):
         content=ft.Column([dm_recipient_input], width=350, tight=True),
         actions=[
             ft.TextButton("Cancelar", on_click=lambda _: close_dm_dlg()),
-            ft.Button(content="Enviar", on_click=send_dm_click),
+            ft.TextButton("Enviar", on_click=send_dm_click),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     )
@@ -1484,6 +1537,7 @@ def main(page: ft.Page):
     page.overlay.append(dm_snackbar)
     file_picker = ft.FilePicker()
     page.services.append(file_picker)
+    page.on_login = on_oauth_login
     page.update()
 
     create_room_btn = ft.IconButton(
