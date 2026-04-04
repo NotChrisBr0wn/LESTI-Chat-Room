@@ -9,7 +9,9 @@ import mimetypes
 import os
 import uuid
 from pathlib import Path
+from types import ModuleType
 
+duckdb: ModuleType | None
 if importlib.util.find_spec("duckdb"):
     duckdb = importlib.import_module("duckdb")
 else:
@@ -18,9 +20,8 @@ else:
 import flet as ft
 from flet.auth.providers import GoogleOAuthProvider
 
-# Limites para anexos (20MB total, 750KB para anexos inline, 5MB para imagens inline)
+# Limites para anexos (20MB total, 5MB para imagens inline)
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
-MAX_INLINE_ATTACHMENT_BYTES = 750_000
 MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
 
 env_file = Path(__file__).resolve().with_name("auth.env")
@@ -245,8 +246,10 @@ def main(page: ft.Page):
     dm_recipient_input = ft.TextField(label="Mensagem privada", multiline=True, min_lines=1, max_lines=4)
     login_feedback = ft.Text("", color=ft.Colors.RED_300, size=12)
     
-    # Snackbar para notificações
-    dm_snackbar = ft.SnackBar(ft.Text(""), duration=5000)
+    create_room_btn: ft.FilledButton
+    image_preview_dlg: ft.AlertDialog
+    emoji_picker_dlg: ft.AlertDialog
+    settings_dlg: ft.AlertDialog
 
     # Funções auxiliares
     def open_dialog(dialog: ft.DialogControl):
@@ -720,6 +723,49 @@ def main(page: ft.Page):
                 return existing_message
         return None
 
+    def find_dm_message(message_id: str) -> tuple[str, Message] | None:
+        for dm_key, dm_messages in dm_conversations.items():
+            for existing_message in dm_messages:
+                if existing_message.message_id == message_id:
+                    return dm_key, existing_message
+        return None
+
+    def apply_reaction_to_message(message: Message, reacting_tab_id: str, reaction_key: str, reaction_action: str):
+        ensure_reactions(message)
+        if reaction_action == "remove":
+            remove_reaction(message, reacting_tab_id, reaction_key)
+        else:
+            add_reaction(message, reacting_tab_id, reaction_key)
+
+    def apply_reaction_to_dm_message(target_message_id: str, reacting_tab_id: str, reaction_key: str, reaction_action: str) -> bool:
+        dm_match = find_dm_message(target_message_id)
+        if not dm_match:
+            return False
+
+        dm_key, target_message = dm_match
+        apply_reaction_to_message(target_message, reacting_tab_id, reaction_key, reaction_action)
+        dm_conversations[dm_key] = list(dm_conversations.get(dm_key, []))
+        persist_history()
+        return True
+
+    def update_dm_message_text(target_message_id: str, new_text: str, deleted_for_all: bool = False) -> bool:
+        dm_match = find_dm_message(target_message_id)
+        if not dm_match:
+            return False
+
+        dm_key, target_message = dm_match
+        target_message.text = new_text
+        target_message.edited = not deleted_for_all and bool(new_text)
+        target_message.deleted_for_all = deleted_for_all
+        if deleted_for_all:
+            target_message.attachment_name = ""
+            target_message.attachment_mime = ""
+            target_message.attachment_data = ""
+            target_message.attachment_size = 0
+        dm_conversations[dm_key] = list(dm_conversations.get(dm_key, []))
+        persist_history()
+        return True
+
     def can_manage(request_user_name: str, request_tab_id: str, target_message: Message) -> bool:
         if request_tab_id and target_message.tab_id:
             return request_tab_id == target_message.tab_id
@@ -751,6 +797,28 @@ def main(page: ft.Page):
         if not editing_message_id or not new_text:
             return
 
+        if selected_dm_user:
+            updated = update_dm_message_text(editing_message_id, new_text, deleted_for_all=False)
+            if updated:
+                page.pubsub.send_all_on_topic(
+                    selected_dm_user,
+                    Message(
+                        user_name=valid_user_name() or "Unk",
+                        text=new_text,
+                        message_type="message_edit",
+                        room_name="",
+                        target_message_id=editing_message_id,
+                        tab_id=tab_id,
+                        recipient_name=selected_dm_user,
+                    ),
+                )
+                load_room_messages()
+                page.update()
+            editing_message_id = ""
+            edit_message_input.value = ""
+            close_edit_dlg()
+            return
+
         stored_room_name = page.session.store.get("room_name")
         if not isinstance(stored_room_name, str) or not stored_room_name:
             return
@@ -773,8 +841,24 @@ def main(page: ft.Page):
 
     def hide_message(_):
         nonlocal selected_message_id
+        if not selected_message_id:
+            return
+
+        if selected_dm_user:
+            dm_key = dm_key_for(selected_dm_user)
+            if not dm_key:
+                return
+            init_hidden_ids(dm_key)
+            hidden_message_ids_by_room[dm_key].add(selected_message_id)
+            persist_history()
+            selected_message_id = ""
+            close_actions_dlg()
+            load_room_messages()
+            page.update()
+            return
+
         stored_room_name = page.session.store.get("room_name")
-        if not isinstance(stored_room_name, str) or not stored_room_name or not selected_message_id:
+        if not isinstance(stored_room_name, str) or not stored_room_name:
             return
 
         init_hidden_ids(stored_room_name)
@@ -787,8 +871,32 @@ def main(page: ft.Page):
 
     def delete_message(_):
         nonlocal selected_message_id
+        if not selected_message_id:
+            return
+
+        if selected_dm_user:
+            updated = update_dm_message_text(selected_message_id, "Esta mensagem foi apagada.", deleted_for_all=True)
+            if updated:
+                page.pubsub.send_all_on_topic(
+                    selected_dm_user,
+                    Message(
+                        user_name=valid_user_name() or "Unk",
+                        text="",
+                        message_type="message_delete_all",
+                        room_name="",
+                        target_message_id=selected_message_id,
+                        tab_id=tab_id,
+                        recipient_name=selected_dm_user,
+                    ),
+                )
+                load_room_messages()
+                page.update()
+            selected_message_id = ""
+            close_actions_dlg()
+            return
+
         stored_room_name = page.session.store.get("room_name")
-        if not isinstance(stored_room_name, str) or not stored_room_name or not selected_message_id:
+        if not isinstance(stored_room_name, str) or not stored_room_name:
             return
 
         page.pubsub.send_all_on_topic(
@@ -807,8 +915,24 @@ def main(page: ft.Page):
 
     def edit_message(_):
         nonlocal editing_message_id
+        if not selected_message_id:
+            return
+
+        if selected_dm_user:
+            target_message = find_dm_message(selected_message_id)
+            if not target_message or target_message[1].deleted_for_all or target_message[1].attachment_name:
+                close_actions_dlg()
+                return
+
+            editing_message_id = selected_message_id
+            selected_message_text = target_message[1].text or ""
+            edit_message_input.value = selected_message_text
+            close_actions_dlg()
+            open_dialog(edit_message_dlg)
+            return
+
         stored_room_name = page.session.store.get("room_name")
-        if not isinstance(stored_room_name, str) or not stored_room_name or not selected_message_id:
+        if not isinstance(stored_room_name, str) or not stored_room_name:
             return
 
         target_message = find_message(stored_room_name, selected_message_id)
@@ -957,17 +1081,56 @@ def main(page: ft.Page):
             return
 
         stored_user_name = valid_user_name() or "Unk"
+        reaction_action = "add"
+        local_dm_message = None
+
+        if selected_dm_user:
+            dm_key = dm_key_for(selected_dm_user)
+            for existing_message in dm_conversations.get(dm_key, []):
+                if existing_message.message_id == target_message_id:
+                    ensure_reactions(existing_message)
+                    current_users = existing_message.reaction_users.get(reaction_key, [])
+                    reaction_action = "remove" if tab_id in current_users else "add"
+                    local_dm_message = existing_message
+                    break
+        else:
+            stored_room_name = page.session.store.get("room_name")
+            if not isinstance(stored_room_name, str) or not stored_room_name:
+                return
+
+            for existing_message in room_history.get(stored_room_name, []):
+                if existing_message.message_id == target_message_id:
+                    ensure_reactions(existing_message)
+                    current_users = existing_message.reaction_users.get(reaction_key, [])
+                    reaction_action = "remove" if tab_id in current_users else "add"
+                    break
+
+        if local_dm_message:
+            apply_reaction_to_message(local_dm_message, tab_id, reaction_key, reaction_action)
+            persist_history()
+            load_room_messages()
+            refresh_dm_sidebar()
+            page.update()
+            page.pubsub.send_all_on_topic(
+                selected_dm_user,
+                Message(
+                    user_name=stored_user_name,
+                    text="",
+                    message_type="reaction_update",
+                    room_name="",
+                    target_message_id=target_message_id,
+                    reaction_type=reaction_key,
+                    reaction_action=reaction_action,
+                    reaction_request_id=uuid.uuid4().hex,
+                    tab_id=tab_id,
+                    recipient_name=selected_dm_user,
+                ),
+            )
+            return
+
         stored_room_name = page.session.store.get("room_name")
         if not isinstance(stored_room_name, str) or not stored_room_name:
             return
-
-        reaction_action = "add"
-        for existing_message in room_history.get(stored_room_name, []):
-            if existing_message.message_id == target_message_id:
-                ensure_reactions(existing_message)
-                current_users = existing_message.reaction_users.get(reaction_key, [])
-                reaction_action = "remove" if tab_id in current_users else "add"
-                break
 
         page.pubsub.send_all_on_topic(
             stored_room_name,
@@ -1164,6 +1327,8 @@ def main(page: ft.Page):
         if selected_dm_user:
             dm_key = dm_key_for(selected_dm_user)
             for message in dm_conversations.get(dm_key, []):
+                if is_hidden(dm_key, message.message_id):
+                    continue
                 chat.controls.append(message_control(message))
             refresh_dm_sidebar()
             scroll_chat_to_latest()
@@ -1449,6 +1614,7 @@ def main(page: ft.Page):
             dm_key = dm_key_for(selected_dm_user)
             if dm_key not in dm_conversations:
                 dm_conversations[dm_key] = []
+            ensure_reactions(msg)
             dm_conversations[dm_key].append(msg)
             persist_history()
             page.pubsub.send_all_on_topic(selected_dm_user, msg)
@@ -1568,17 +1734,17 @@ def main(page: ft.Page):
                     return
                 processed_reaction_requests.add(reaction_request_id)
 
+                updated = False
                 for existing_message in room_history[topic_name]:
                     if existing_message.message_id == target_message_id:
-                        if reaction_action == "remove":
-                            remove_reaction(existing_message, reacting_tab_id, reaction_key)
-                        else:
-                            add_reaction(existing_message, reacting_tab_id, reaction_key)
+                        apply_reaction_to_message(existing_message, reacting_tab_id, reaction_key, reaction_action)
+                        updated = True
                         break
 
-                persist_history()
+                if not updated:
+                    updated = apply_reaction_to_dm_message(target_message_id, reacting_tab_id, reaction_key, reaction_action)
 
-                if topic_name == current_room:
+                if updated and topic_name == current_room:
                     load_room_messages()
                     page.update()
                 return
@@ -1595,6 +1761,8 @@ def main(page: ft.Page):
                     target_message.text = new_text
                     target_message.edited = True
                     persist_history()
+                else:
+                    update_dm_message_text(target_message_id, new_text, deleted_for_all=False)
                 if topic_name == current_room:
                     load_room_messages()
                     page.update()
@@ -1616,6 +1784,8 @@ def main(page: ft.Page):
                     target_message.edited = False
                     target_message.deleted_for_all = True
                     persist_history()
+                else:
+                    update_dm_message_text(target_message_id, "Esta mensagem foi apagada.", deleted_for_all=True)
                 if topic_name == current_room:
                     load_room_messages()
                     page.update()
@@ -1710,17 +1880,17 @@ def main(page: ft.Page):
 
             reaction_action = getattr(message, "reaction_action", "add")
 
+            updated = False
             for existing_message in room_history[topic_name]:
                 if existing_message.message_id == message.target_message_id:
-                    if reaction_action == "remove":
-                        remove_reaction(existing_message, message.tab_id, message.reaction_type)
-                    else:
-                        add_reaction(existing_message, message.tab_id, message.reaction_type)
+                    apply_reaction_to_message(existing_message, message.tab_id, message.reaction_type, reaction_action)
+                    updated = True
                     break
 
-            persist_history()
+            if not updated:
+                updated = apply_reaction_to_dm_message(message.target_message_id, message.tab_id, message.reaction_type, reaction_action)
 
-            if topic_name == current_room:
+            if updated and topic_name == current_room:
                 load_room_messages()
                 page.update()
             return
@@ -1731,6 +1901,8 @@ def main(page: ft.Page):
                 target_message.text = message.text
                 target_message.edited = True
                 persist_history()
+            else:
+                update_dm_message_text(message.target_message_id, message.text, deleted_for_all=False)
             if topic_name == current_room:
                 load_room_messages()
                 page.update()
@@ -1747,6 +1919,8 @@ def main(page: ft.Page):
                 target_message.edited = False
                 target_message.deleted_for_all = True
                 persist_history()
+            else:
+                update_dm_message_text(message.target_message_id, "Esta mensagem foi apagada.", deleted_for_all=True)
             if topic_name == current_room:
                 load_room_messages()
                 page.update()
@@ -1946,7 +2120,6 @@ def main(page: ft.Page):
     page.overlay.append(image_preview_dlg)
     page.overlay.append(message_actions_dlg)
     page.overlay.append(edit_message_dlg)
-    page.overlay.append(dm_snackbar)
     file_picker = ft.FilePicker()
     page.services.append(file_picker)
     page.on_login = on_oauth_login
@@ -2000,6 +2173,7 @@ def main(page: ft.Page):
         page.update()
 
     def build_background_preview_option(path: str, label: str) -> ft.Control:
+        preview: ft.Control
         if path:
             preview = ft.Image(src=f"/{path}", width=120, height=70, fit=ft.BoxFit.COVER)
         else:
@@ -2351,4 +2525,15 @@ def main(page: ft.Page):
     )
 
 
-ft.run(main, host="127.0.0.1", port=60123, assets_dir="assets")
+if __name__ == "__main__":
+    host = os.getenv("HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", "60123"))
+
+    # For cloud deploys (Fly.io/Replit), set HOST=0.0.0.0 and PORT via env.
+    ft.app(
+        target=main,
+        view=ft.AppView.WEB_BROWSER,
+        host=host,
+        port=port,
+        assets_dir="assets",
+    )

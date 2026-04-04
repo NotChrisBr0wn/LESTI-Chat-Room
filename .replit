@@ -1,0 +1,2 @@
+entrypoint = "chat.py"
+run = "python chat.py"
