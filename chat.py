@@ -1987,6 +1987,8 @@ def main(page: ft.Page):
     def logout_click(_):
         nonlocal active_user_name, login_bootstrapped, selected_dm_user
 
+        user_to_remove = (active_user_name or valid_user_name() or "").strip()
+
         try:
             logout_result = page.logout()
             if asyncio.iscoroutine(logout_result):
@@ -2002,6 +2004,12 @@ def main(page: ft.Page):
         new_message.disabled = True
         create_room_btn.disabled = True
         room_badge.value = "Sala atual: sem sessão"
+        if user_to_remove:
+            for users_in_room in room_users_by_room.values():
+                users_in_room.discard(user_to_remove)
+        dm_unread_by_user.clear()
+        refresh_users_sidebar()
+        refresh_dm_sidebar()
         chat.controls.clear()
         close_dialog(settings_dlg)
         open_dialog(welcome_dlg)
