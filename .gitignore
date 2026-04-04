@@ -21,5 +21,3 @@ chat_history.json
 chat_history.duckdb
 chat_history.duckdb.wal
 
-# Assets (imagens, etc.) usados na aplicação
-assets/
