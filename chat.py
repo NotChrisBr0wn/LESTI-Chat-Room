@@ -2,11 +2,18 @@ from dataclasses import dataclass, field
 import asyncio
 import base64
 import hashlib
+import importlib
+import importlib.util
 import json
 import mimetypes
 import os
 import uuid
 from pathlib import Path
+
+if importlib.util.find_spec("duckdb"):
+    duckdb = importlib.import_module("duckdb")
+else:
+    duckdb = None
 
 import flet as ft
 from flet.auth.providers import GoogleOAuthProvider
@@ -38,6 +45,7 @@ else:
     GOOGLE_REDIRECT_URL = _GOOGLE_REDIRECT_URL_RAW
 
 HISTORY_FILE = Path(__file__).resolve().with_name("chat_history.json")
+HISTORY_DB_FILE = Path(__file__).resolve().with_name("chat_history.duckdb")
 
 
 @dataclass
@@ -338,6 +346,39 @@ def main(page: ft.Page):
             },
         }
 
+        def save_payload_to_duckdb(data: dict) -> bool:
+            if not duckdb:
+                return False
+
+            try:
+                connection = duckdb.connect(str(HISTORY_DB_FILE))
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS chat_state (
+                        state_key VARCHAR PRIMARY KEY,
+                        payload_json TEXT,
+                        updated_at TIMESTAMP DEFAULT now()
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO chat_state (state_key, payload_json, updated_at)
+                    VALUES ('global', ?, now())
+                    ON CONFLICT(state_key) DO UPDATE SET
+                        payload_json = excluded.payload_json,
+                        updated_at = now()
+                    """,
+                    [json.dumps(data, ensure_ascii=False)],
+                )
+                connection.close()
+                return True
+            except Exception:
+                return False
+
+        if save_payload_to_duckdb(payload):
+            return
+
         temp_file = HISTORY_FILE.with_suffix(".tmp")
         try:
             temp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -351,7 +392,64 @@ def main(page: ft.Page):
             return
 
         history_loaded = True
-        if not HISTORY_FILE.exists():
+
+        raw_data: dict = {}
+
+        if duckdb and HISTORY_DB_FILE.exists():
+            try:
+                connection = duckdb.connect(str(HISTORY_DB_FILE))
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS chat_state (
+                        state_key VARCHAR PRIMARY KEY,
+                        payload_json TEXT,
+                        updated_at TIMESTAMP DEFAULT now()
+                    )
+                    """
+                )
+                row = connection.execute(
+                    "SELECT payload_json FROM chat_state WHERE state_key='global'"
+                ).fetchone()
+                connection.close()
+                if row and row[0]:
+                    raw_data = json.loads(str(row[0]))
+            except Exception:
+                raw_data = {}
+
+        if not raw_data and HISTORY_FILE.exists():
+            try:
+                raw_data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+
+                # Migração automática: JSON antigo -> DuckDB.
+                if duckdb:
+                    try:
+                        connection = duckdb.connect(str(HISTORY_DB_FILE))
+                        connection.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS chat_state (
+                                state_key VARCHAR PRIMARY KEY,
+                                payload_json TEXT,
+                                updated_at TIMESTAMP DEFAULT now()
+                            )
+                            """
+                        )
+                        connection.execute(
+                            """
+                            INSERT INTO chat_state (state_key, payload_json, updated_at)
+                            VALUES ('global', ?, now())
+                            ON CONFLICT(state_key) DO UPDATE SET
+                                payload_json = excluded.payload_json,
+                                updated_at = now()
+                            """,
+                            [json.dumps(raw_data, ensure_ascii=False)],
+                        )
+                        connection.close()
+                    except Exception:
+                        pass
+            except (OSError, json.JSONDecodeError):
+                raw_data = {}
+
+        if not raw_data:
             if "geral" not in rooms:
                 rooms.append("geral")
             if "geral" not in room_history:
@@ -359,11 +457,6 @@ def main(page: ft.Page):
             init_room_users("geral")
             init_hidden_ids("geral")
             return
-
-        try:
-            raw_data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            raw_data = {}
 
         loaded_rooms = list(raw_data.get("rooms") or [])
         for raw_room in loaded_rooms:
@@ -1028,6 +1121,12 @@ def main(page: ft.Page):
             color=ft.Colors.BLUE_700,
             size=12,
         )
+
+    def scroll_chat_to_latest():
+        try:
+            asyncio.create_task(chat.scroll_to(offset=-1))
+        except RuntimeError:
+            pass
         
     # Atualiza painel central conforme o contexto
     def load_room_messages():
@@ -1038,6 +1137,7 @@ def main(page: ft.Page):
             for message in dm_conversations.get(dm_key, []):
                 chat.controls.append(message_control(message))
             refresh_dm_sidebar()
+            scroll_chat_to_latest()
             return
 
         for message in room_history.get(current_room, []):
@@ -1045,6 +1145,7 @@ def main(page: ft.Page):
                 continue
             chat.controls.append(message_control(message))
         refresh_users_sidebar()
+        scroll_chat_to_latest()
 
     def update_rooms():
         room_controls: list[ft.Control] = [
@@ -1518,6 +1619,7 @@ def main(page: ft.Page):
                 last_msg = room_history[topic_name][-1]
                 if not is_hidden(topic_name, last_msg.message_id):
                     chat.controls.append(message_control(last_msg))
+                    scroll_chat_to_latest()
                     refresh_users_sidebar()
                     page.update()
             return
@@ -1650,6 +1752,7 @@ def main(page: ft.Page):
 
         if topic_name == current_room and not is_hidden(topic_name, message.message_id):
             chat.controls.append(message_control(message))
+            scroll_chat_to_latest()
             refresh_users_sidebar()
             page.update()
 

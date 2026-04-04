@@ -18,3 +18,5 @@ credentials*.json
 
 # Dados locais da app
 chat_history.json
+chat_history.duckdb
+chat_history.duckdb.wal
