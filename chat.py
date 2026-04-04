@@ -490,7 +490,7 @@ def main(page: ft.Page):
                 content=ft.Text(str(unread), size=10, color=ft.Colors.WHITE),
                 bgcolor=ft.Colors.RED_500,
                 border_radius=10,
-                padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                padding=ft.Padding.symmetric(horizontal=6, vertical=2),
                 visible=unread > 0,
             )
             peer_avatar = ft.CircleAvatar()
