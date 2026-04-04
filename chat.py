@@ -1,8 +1,11 @@
 from dataclasses import dataclass, field
+import asyncio
 import base64
+import hashlib
 import mimetypes
 import os
 import uuid
+from pathlib import Path
 
 import flet as ft
 from flet.auth.providers import GoogleOAuthProvider
@@ -12,9 +15,26 @@ MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_INLINE_ATTACHMENT_BYTES = 750_000
 MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
 
+env_file = Path(__file__).resolve().with_name("auth.env")
+if env_file.exists():
+    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
-GOOGLE_REDIRECT_URL = os.getenv("GOOGLE_REDIRECT_URL", "").strip()
+_GOOGLE_REDIRECT_URL_RAW = os.getenv("GOOGLE_REDIRECT_URL", "").strip()
+if _GOOGLE_REDIRECT_URL_RAW and not _GOOGLE_REDIRECT_URL_RAW.rstrip("/").endswith("/oauth_callback"):
+    GOOGLE_REDIRECT_URL = _GOOGLE_REDIRECT_URL_RAW.rstrip("/") + "/oauth_callback"
+else:
+    GOOGLE_REDIRECT_URL = _GOOGLE_REDIRECT_URL_RAW
 
 
 @dataclass
@@ -45,6 +65,29 @@ REACTIONS = {
     "heart": "❤️",
     "cool": "👍",
 }
+
+AVATAR_COLORS = [
+    ft.Colors.AMBER,
+    ft.Colors.BLUE,
+    ft.Colors.BROWN,
+    ft.Colors.CYAN,
+    ft.Colors.GREEN,
+    ft.Colors.INDIGO,
+    ft.Colors.LIME,
+    ft.Colors.ORANGE,
+    ft.Colors.PINK,
+    ft.Colors.PURPLE,
+    ft.Colors.RED,
+    ft.Colors.TEAL,
+    ft.Colors.YELLOW,
+]
+
+
+def avatar_color_for_user(user_name: str) -> str:
+    normalized = (user_name or "").strip().lower() or "unknown"
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    index = int(digest[:8], 16) % len(AVATAR_COLORS)
+    return AVATAR_COLORS[index]
 
 @ft.control
 class ChatMessage(ft.Row):
@@ -106,12 +149,13 @@ class ChatMessage(ft.Row):
             message_controls.append(attachment_preview)
         message_controls.append(ft.Row(controls=reaction_buttons, spacing=4, wrap=True))
 
+        avatar_circle = ft.CircleAvatar()
+        avatar_circle.content = ft.Text(self.get_initials(self.message.user_name))
+        avatar_circle.color = ft.Colors.WHITE
+        avatar_circle.bgcolor = self.get_avatar_color(self.message.user_name)
+
         avatar = ft.Container(
-            content=ft.CircleAvatar(
-                content=ft.Text(self.get_initials(self.message.user_name)),
-                color=ft.Colors.WHITE,
-                bgcolor=self.get_avatar_color(self.message.user_name),
-            ),
+            content=avatar_circle,
             on_click=lambda _e: on_user_click(self.message.user_name) if on_user_click else None,
         )
 
@@ -131,22 +175,7 @@ class ChatMessage(ft.Row):
             return "Unk"  # Retorna "Unk" para nomes vazios ou nulos
 
     def get_avatar_color(self, user_name: str):
-        colors_lookup = [
-            ft.Colors.AMBER,
-            ft.Colors.BLUE,
-            ft.Colors.BROWN,
-            ft.Colors.CYAN,
-            ft.Colors.GREEN,
-            ft.Colors.INDIGO,
-            ft.Colors.LIME,
-            ft.Colors.ORANGE,
-            ft.Colors.PINK,
-            ft.Colors.PURPLE,
-            ft.Colors.RED,
-            ft.Colors.TEAL,
-            ft.Colors.YELLOW,
-        ]
-        return colors_lookup[hash(user_name) % len(colors_lookup)]
+        return avatar_color_for_user(user_name)
 
 # Função principal
 def main(page: ft.Page):
@@ -164,6 +193,7 @@ def main(page: ft.Page):
     processed_reaction_requests: set[str] = set()
     current_room = ""
     active_user_name = ""
+    login_bootstrapped = False
     topic_subscribed = False
     tab_id = uuid.uuid4().hex
     selected_message_id = ""
@@ -173,6 +203,7 @@ def main(page: ft.Page):
     current_dm_user = ""
     selected_dm_user = ""
     dm_unread_by_user: dict[str, int] = {}
+    left_nav_mode = "rooms"
     dm_recipient_input = ft.TextField(label="Mensagem privada", multiline=True, min_lines=1, max_lines=4)
     login_feedback = ft.Text("", color=ft.Colors.RED_300, size=12)
     
@@ -215,12 +246,6 @@ def main(page: ft.Page):
         auth_name = auth_user_name()
         if auth_name:
             return auth_name
-
-        stored_user_name = page.session.store.get("user_name")
-        if isinstance(stored_user_name, str):
-            user_name = stored_user_name.strip()
-            if user_name:
-                return user_name
         return ""
 
     def is_logged_in() -> bool:
@@ -252,16 +277,17 @@ def main(page: ft.Page):
             return
 
         for user_name in users:
+            user_avatar = ft.CircleAvatar()
+            user_avatar.radius = 12
+            user_avatar.content = ft.Text(user_name[:1].upper() if user_name else "?", size=10)
+            user_avatar.color = ft.Colors.WHITE
+            user_avatar.bgcolor = avatar_color_for_user(user_name)
+
             users_col.controls.append(
                 ft.TextButton(
                     content=ft.Row(
                         controls=[
-                            ft.CircleAvatar(
-                                radius=12,
-                                content=ft.Text(user_name[:1].upper() if user_name else "?", size=10),
-                                color=ft.Colors.WHITE,
-                                bgcolor=ft.Colors.BLUE_GREY_400,
-                            ),
+                            user_avatar,
                             ft.Text(user_name),
                         ],
                         spacing=8,
@@ -309,16 +335,17 @@ def main(page: ft.Page):
                 padding=ft.padding.symmetric(horizontal=6, vertical=2),
                 visible=unread > 0,
             )
+            peer_avatar = ft.CircleAvatar()
+            peer_avatar.radius = 12
+            peer_avatar.content = ft.Text(peer[:1].upper() if peer else "?", size=10)
+            peer_avatar.color = ft.Colors.WHITE
+            peer_avatar.bgcolor = avatar_color_for_user(peer)
+
             dm_col.controls.append(
                 ft.TextButton(
                     content=ft.Row(
                         controls=[
-                            ft.CircleAvatar(
-                                radius=12,
-                                content=ft.Text(peer[:1].upper() if peer else "?", size=10),
-                                color=ft.Colors.WHITE,
-                                bgcolor=ft.Colors.BLUE_400,
-                            ),
+                            peer_avatar,
                             ft.Text(peer, weight=ft.FontWeight.W_500),
                             ft.Container(expand=True),
                             badge,
@@ -334,6 +361,26 @@ def main(page: ft.Page):
                     on_click=lambda _e, target=peer: open_dm_thread(target),
                 )
             )
+
+    def refresh_left_sidebar():
+        rooms_nav_panel.visible = left_nav_mode == "rooms"
+        dms_nav_panel.visible = left_nav_mode == "dms"
+        room_tab_btn.style = ft.ButtonStyle(
+            bgcolor=ft.Colors.BLUE_400 if left_nav_mode == "rooms" else ft.Colors.GREY_800,
+            color=ft.Colors.WHITE,
+            padding=8,
+        )
+        dm_tab_btn.style = ft.ButtonStyle(
+            bgcolor=ft.Colors.BLUE_400 if left_nav_mode == "dms" else ft.Colors.GREY_800,
+            color=ft.Colors.WHITE,
+            padding=8,
+        )
+
+    def show_left_nav(mode: str):
+        nonlocal left_nav_mode
+        left_nav_mode = mode if mode in {"rooms", "dms"} else "rooms"
+        refresh_left_sidebar()
+        page.update()
 
     def open_dm_thread(peer_name: str):
         nonlocal selected_dm_user
@@ -930,13 +977,18 @@ def main(page: ft.Page):
             ),
         )
 
-    def join_chat_click(e):
-        nonlocal active_user_name
+    def complete_google_login(show_error: bool = True) -> bool:
+        nonlocal active_user_name, login_bootstrapped
         user_name = valid_user_name()
         if not user_name:
-            login_feedback.value = "Não foi possível fazer login."
-            page.update()
-            return
+            if show_error:
+                login_feedback.value = "Não foi possível fazer login."
+                page.update()
+            return False
+
+        if login_bootstrapped and active_user_name == user_name:
+            close_dialog(welcome_dlg)
+            return True
 
         login_feedback.value = ""
         active_user_name = user_name
@@ -960,7 +1012,9 @@ def main(page: ft.Page):
         )
         new_message.disabled = False
         create_room_btn.disabled = False
+        login_bootstrapped = True
         page.update()
+        return True
 
     google_provider = None
     if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URL:
@@ -972,19 +1026,33 @@ def main(page: ft.Page):
 
     async def google_login_click(_):
         if not google_provider:
-            login_feedback.value = "Configura GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET e GOOGLE_REDIRECT_URL."
+            login_feedback.value = "Configura GOOGLE_* e usa /oauth_callback no GOOGLE_REDIRECT_URL."
             page.update()
             return
 
         login_feedback.value = ""
-        await page.login(provider=google_provider)
+        await page.login(
+            provider=google_provider,
+            redirect_to_page=False,
+        )
+
+    async def finalize_google_login_with_retry():
+        for _ in range(10):
+            if complete_google_login(show_error=False):
+                return
+            await asyncio.sleep(0.2)
+        login_feedback.value = "Não foi possível fazer login."
+        page.update()
 
     def on_oauth_login(e):
         if getattr(e, "error", ""):
             login_feedback.value = f"Falha no login: {e.error}"
             page.update()
             return
-        join_chat_click(None)
+        if not complete_google_login(show_error=False):
+            login_feedback.value = "A finalizar login Google..."
+            page.update()
+            asyncio.create_task(finalize_google_login_with_retry())
 
     def create_room_click(e):
         if not is_logged_in():
@@ -1540,11 +1608,24 @@ def main(page: ft.Page):
     page.on_login = on_oauth_login
     page.update()
 
-    create_room_btn = ft.IconButton(
-        icon=ft.Icons.ADD_BOX_ROUNDED,
-        tooltip="+",
+    create_room_btn = ft.ElevatedButton(
+        content=ft.Row(
+            controls=[
+                ft.Icon(ft.Icons.ADD, size=16, color=ft.Colors.WHITE),
+                ft.Text("Nova sala", color=ft.Colors.WHITE),
+            ],
+            tight=True,
+            spacing=6,
+        ),
+        tooltip="Criar uma nova sala",
         on_click=open_create_room_dlg,
         disabled=True,
+        style=ft.ButtonStyle(
+            bgcolor=ft.Colors.BLUE_500,
+            color=ft.Colors.WHITE,
+            padding=ft.padding.symmetric(horizontal=12, vertical=10),
+            shape=ft.RoundedRectangleBorder(radius=10),
+        ),
     )
 
     def bootstrap_session_state():
@@ -1575,10 +1656,43 @@ def main(page: ft.Page):
     bootstrap_session_state()
 
     # Adicionar tudo à página
+    rooms_nav_panel = ft.Container(
+        content=ft.Column(
+            controls=[
+                ft.Text("Salas", weight=ft.FontWeight.BOLD, size=14),
+                ft.Container(content=create_room_btn),
+                rooms_col,
+            ],
+            spacing=6,
+            expand=True,
+        ),
+        border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+        border_radius=5,
+        padding=10,
+        width=260,
+    )
+    dms_nav_panel = ft.Container(
+        content=ft.Column(
+            controls=[
+                ft.Text("Mensagens privadas", weight=ft.FontWeight.BOLD, size=14),
+                dm_col,
+            ],
+            spacing=6,
+            expand=True,
+        ),
+        border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+        border_radius=5,
+        padding=10,
+        width=260,
+    )
+
+    room_tab_btn = ft.TextButton("Salas", on_click=lambda _: show_left_nav("rooms"))
+    dm_tab_btn = ft.TextButton("DMs", on_click=lambda _: show_left_nav("dms"))
+    refresh_left_sidebar()
+
     page.add(
         ft.Row(
             controls=[
-                create_room_btn,
                 ft.Text("DiscirdApp", size=16, weight=ft.FontWeight.BOLD),
             ],
             alignment=ft.MainAxisAlignment.START,
@@ -1590,11 +1704,9 @@ def main(page: ft.Page):
                 ft.Container(
                     content=ft.Column(
                         controls=[
-                            ft.Text("Salas", weight=ft.FontWeight.BOLD, size=14),
-                            rooms_col,
-                            ft.Divider(height=10),
-                            ft.Text("Mensagens privadas", weight=ft.FontWeight.BOLD, size=14),
-                            dm_col,
+                            ft.Row(controls=[room_tab_btn, dm_tab_btn], spacing=8),
+                            rooms_nav_panel,
+                            dms_nav_panel,
                         ],
                         spacing=6,
                         expand=True,
@@ -1653,4 +1765,4 @@ def main(page: ft.Page):
     )
 
 
-ft.run(main)
+ft.run(main, host="127.0.0.1", port=60123)
