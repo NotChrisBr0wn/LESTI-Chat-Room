@@ -100,9 +100,9 @@ AVATAR_COLORS = [
 
 CHAT_BACKGROUND_PRESETS = [
     ("", "Sem fundo"),
-    ("assets/social_life.png", "Social Life"),
-    ("assets/Medieval.png", "Medieval"),
-    ("assets/Medieval_Beach.png", "Medieval Beach"),
+    ("social_life.png", "Social Life"),
+    ("Medieval.png", "Medieval"),
+    ("Medieval_Beach.png", "Medieval Beach"),
 ]
 
 
@@ -162,15 +162,26 @@ class ChatMessage(ft.Row):
             ft.Row(controls=header_row_controls, tight=True, spacing=4)
         ]
 
+        bubble_controls: list[ft.Control] = []
+
         if self.message.text.strip() and not self.message.attachment_name:
-            message_controls.append(ft.Text(self.message.text, selectable=True, color=ft.Colors.WHITE_70))
+            bubble_controls.append(ft.Text(self.message.text, selectable=True, color=ft.Colors.WHITE_70))
 
         if self.message.edited and not self.message.deleted_for_all:
-            message_controls.append(ft.Text("editada", size=10, italic=True, color=ft.Colors.WHITE_54))
+            bubble_controls.append(ft.Text("editada", size=10, italic=True, color=ft.Colors.WHITE_54))
 
         if attachment_preview:
-            message_controls.append(attachment_preview)
-        message_controls.append(ft.Row(controls=reaction_buttons, spacing=4, wrap=True))
+            bubble_controls.append(attachment_preview)
+        bubble_controls.append(ft.Row(controls=reaction_buttons, spacing=4, wrap=True))
+
+        message_controls.append(
+            ft.Container(
+                content=ft.Column(controls=bubble_controls, spacing=6, tight=True),
+                bgcolor=ft.Colors.BLUE_GREY_900,
+                border_radius=12,
+                padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+            )
+        )
 
         avatar_circle = ft.CircleAvatar()
         avatar_circle.content = ft.Text(self.get_initials(self.message.user_name))
@@ -1969,9 +1980,52 @@ def main(page: ft.Page):
     def apply_chat_background(path: str):
         nonlocal current_chat_background
         current_chat_background = (path or "").strip()
-        chat_background_image.src = current_chat_background
+        if current_chat_background:
+            chat_background_image.src = (
+                current_chat_background
+                if current_chat_background.startswith("/")
+                else f"/{current_chat_background}"
+            )
+        else:
+            chat_background_image.src = ""
         chat_background_image.visible = bool(current_chat_background)
         page.update()
+
+    def build_background_preview_option(path: str, label: str) -> ft.Control:
+        if path:
+            preview = ft.Image(src=f"/{path}", width=120, height=70, fit=ft.BoxFit.COVER)
+        else:
+            preview = ft.Container(
+                width=120,
+                height=70,
+                border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+                border_radius=8,
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(ft.Icons.BLOCK, size=16, color=ft.Colors.WHITE_54),
+                        ft.Text("Sem fundo", size=11, color=ft.Colors.WHITE_70),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=6,
+                ),
+            )
+
+        return ft.Container(
+            width=130,
+            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+            border_radius=10,
+            padding=6,
+            on_click=lambda _e, value=path: apply_chat_background(value),
+            content=ft.Column(
+                controls=[
+                    preview,
+                    ft.Text(label, size=11, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                ],
+                spacing=6,
+                tight=True,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
 
     def update_theme_button_visual():
         is_dark = page.theme_mode != ft.ThemeMode.LIGHT
@@ -2034,7 +2088,7 @@ def main(page: ft.Page):
                 ft.Text("Imagem de fundo da conversa", weight=ft.FontWeight.W_600),
                 ft.Row(
                     controls=[
-                        ft.TextButton(label, on_click=lambda _e, value=path: apply_chat_background(value))
+                        build_background_preview_option(path, label)
                         for path, label in CHAT_BACKGROUND_PRESETS
                     ],
                     wrap=True,
@@ -2081,6 +2135,9 @@ def main(page: ft.Page):
 
     bootstrap_session_state()
 
+    panel_glass_bg = ft.Colors.with_opacity(0.42, ft.Colors.BLACK)
+    nested_glass_bg = ft.Colors.with_opacity(0.26, ft.Colors.BLACK)
+
     # Adicionar tudo à página
     rooms_nav_panel = ft.Container(
         content=ft.Column(
@@ -2095,6 +2152,7 @@ def main(page: ft.Page):
         border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
         border_radius=5,
         padding=10,
+        bgcolor=nested_glass_bg,
         width=260,
     )
     dms_nav_panel = ft.Container(
@@ -2109,6 +2167,7 @@ def main(page: ft.Page):
         border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
         border_radius=5,
         padding=10,
+        bgcolor=nested_glass_bg,
         width=260,
     )
 
@@ -2136,113 +2195,121 @@ def main(page: ft.Page):
     refresh_left_sidebar()
 
     page.add(
-        ft.Row(
+        ft.Stack(
             controls=[
-                ft.Text("DiscirdApp", size=30, weight=ft.FontWeight.BOLD),
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        ),
-        ft.Row(
-            controls=[
-                ft.Container(
-                    content=ft.Column(
-                        controls=[
-                            ft.Row(
-                                controls=[
-                                    room_tab_btn,
-                                    dm_tab_btn,
-                                    ft.Container(content=room_badge, expand=True),
-                                ],
-                                spacing=8,
-                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                            ),
-                            rooms_nav_panel,
-                            dms_nav_panel,
-                        ],
-                        spacing=6,
-                        expand=True,
-                    ),
-                    border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-                    border_radius=5,
-                    padding=10,
-                    width=260,
-                ),
-                ft.Container(
-                    content=ft.Stack(
-                        controls=[
-                            chat_background_image,
-                            ft.Column(
-                                controls=[
-                                    chat,
-                                    ft.Container(
-                                        content=ft.Row(
-                                            controls=[
-                                                new_message,
-                                                ft.IconButton(
-                                                    icon=ft.Icons.EMOJI_EMOTIONS_OUTLINED,
-                                                    tooltip="Inserir emoji",
-                                                    on_click=lambda _: open_dialog(emoji_picker_dlg),
-                                                ),
-                                                ft.IconButton(
-                                                    icon=ft.Icons.IMAGE_OUTLINED,
-                                                    tooltip="Anexar imagem",
-                                                    on_click=send_image_attachment,
-                                                ),
-                                                ft.IconButton(
-                                                    icon=ft.Icons.ATTACH_FILE,
-                                                    tooltip="Anexar ZIP",
-                                                    on_click=send_zip_attachment,
-                                                ),
-                                                ft.IconButton(
-                                                    icon=ft.Icons.SEND_ROUNDED,
-                                                    tooltip="Enviar mensagem",
-                                                    on_click=send_message_click,
-                                                ),
-                                            ]
-                                        ),
-                                        padding=ft.Padding.only(top=8),
+                chat_background_image,
+                ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Text("DiscirdApp", size=30, weight=ft.FontWeight.BOLD),
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        ft.Row(
+                            controls=[
+                                ft.Container(
+                                    content=ft.Column(
+                                        controls=[
+                                            ft.Row(
+                                                controls=[
+                                                    room_tab_btn,
+                                                    dm_tab_btn,
+                                                    ft.Container(content=room_badge, expand=True),
+                                                ],
+                                                spacing=8,
+                                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                            ),
+                                            rooms_nav_panel,
+                                            dms_nav_panel,
+                                        ],
+                                        spacing=6,
+                                        expand=True,
                                     ),
-                                ],
-                                expand=True,
-                                spacing=0,
-                            ),
-                        ],
-                        expand=True,
-                    ),
-                    border=ft.Border.all(1, ft.Colors.OUTLINE),
-                    border_radius=5,
-                    padding=10,
-                    expand=5,
-                ),
-                ft.Container(
-                    content=ft.Column(
-                        controls=[
-                            ft.Row(
-                                controls=[
-                                    ft.Text("Utilizadores na sala", weight=ft.FontWeight.BOLD, size=14),
-                                    ft.Container(expand=True),
-                                    theme_toggle_btn,
-                                    settings_btn,
-                                ],
-                                spacing=2,
-                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                            ),
-                            ft.Divider(height=8),
-                            users_col,
-                        ],
-                        spacing=6,
-                        expand=True,
-                    ),
-                    border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-                    border_radius=5,
-                    padding=10,
-                    width=270,
+                                    border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+                                    border_radius=5,
+                                    padding=10,
+                                    bgcolor=panel_glass_bg,
+                                    width=260,
+                                ),
+                                ft.Container(
+                                    content=ft.Column(
+                                        controls=[
+                                            chat,
+                                            ft.Container(
+                                                content=ft.Row(
+                                                    controls=[
+                                                        new_message,
+                                                        ft.IconButton(
+                                                            icon=ft.Icons.EMOJI_EMOTIONS_OUTLINED,
+                                                            tooltip="Inserir emoji",
+                                                            on_click=lambda _: open_dialog(emoji_picker_dlg),
+                                                        ),
+                                                        ft.IconButton(
+                                                            icon=ft.Icons.IMAGE_OUTLINED,
+                                                            tooltip="Anexar imagem",
+                                                            on_click=send_image_attachment,
+                                                        ),
+                                                        ft.IconButton(
+                                                            icon=ft.Icons.ATTACH_FILE,
+                                                            tooltip="Anexar ZIP",
+                                                            on_click=send_zip_attachment,
+                                                        ),
+                                                        ft.IconButton(
+                                                            icon=ft.Icons.SEND_ROUNDED,
+                                                            tooltip="Enviar mensagem",
+                                                            on_click=send_message_click,
+                                                        ),
+                                                    ]
+                                                ),
+                                                padding=ft.Padding.only(top=8),
+                                            ),
+                                        ],
+                                        expand=True,
+                                        spacing=0,
+                                    ),
+                                    border=ft.Border.all(1, ft.Colors.OUTLINE),
+                                    border_radius=5,
+                                    padding=10,
+                                    bgcolor=panel_glass_bg,
+                                    expand=5,
+                                ),
+                                ft.Container(
+                                    content=ft.Column(
+                                        controls=[
+                                            ft.Row(
+                                                controls=[
+                                                    ft.Text("Utilizadores na sala", weight=ft.FontWeight.BOLD, size=14),
+                                                    ft.Container(expand=True),
+                                                    theme_toggle_btn,
+                                                    settings_btn,
+                                                ],
+                                                spacing=2,
+                                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                            ),
+                                            ft.Divider(height=8),
+                                            users_col,
+                                        ],
+                                        spacing=6,
+                                        expand=True,
+                                    ),
+                                    border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+                                    border_radius=5,
+                                    padding=10,
+                                    bgcolor=panel_glass_bg,
+                                    width=270,
+                                ),
+                            ],
+                            expand=True,
+                            spacing=10,
+                        ),
+                    ],
+                    expand=True,
                 ),
             ],
             expand=True,
-            spacing=10,
-        ),
+        )
     )
 
 
