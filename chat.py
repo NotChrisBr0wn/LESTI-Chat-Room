@@ -1496,6 +1496,10 @@ def main(page: ft.Page):
             redirect_url=GOOGLE_REDIRECT_URL,
         )
 
+    def is_ios_web() -> bool:
+        user_agent = str(getattr(page, "client_user_agent", "") or "").lower()
+        return page.web and ("iphone" in user_agent or "ipad" in user_agent or "ipod" in user_agent)
+
     async def open_authorization_url_same_tab(url: str):
         await page.launch_url(
             url,
@@ -1514,11 +1518,14 @@ def main(page: ft.Page):
 
         try:
             if page.web:
-                await page.login(
-                    provider=google_provider,
-                    redirect_to_page=True,
-                    on_open_authorization_url=open_authorization_url_same_tab,
-                )
+                if is_ios_web():
+                    await page.login(
+                        provider=google_provider,
+                        redirect_to_page=True,
+                        on_open_authorization_url=open_authorization_url_same_tab,
+                    )
+                else:
+                    await page.login(provider=google_provider, redirect_to_page=False)
                 return
 
             await page.login(provider=google_provider, redirect_to_page=False)
@@ -2379,7 +2386,6 @@ def main(page: ft.Page):
         stored_user_name = valid_user_name()
         if not stored_user_name:
             active_user_name = ""
-            page.session.store.set("user_name", "")
             new_message.disabled = True
             create_room_btn.disabled = True
             open_dialog(welcome_dlg)
