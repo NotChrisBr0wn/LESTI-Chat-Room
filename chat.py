@@ -1501,11 +1501,8 @@ def main(page: ft.Page):
         )
 
     async def open_authorization_url_same_tab(url: str):
-        await page.launch_url(
-            url,
-            web_popup_window=True,
-            web_popup_window_name=ft.UrlTarget.SELF,
-        )
+        # Evita bloqueio de pop-up em alguns browsers abrindo a URL de autorização na mesma aba
+        await page.launch_url(url)
 
     async def google_login_click(_):
         if not google_provider:
@@ -1530,7 +1527,7 @@ def main(page: ft.Page):
         )
 
     async def finalize_google_login_with_retry():
-        for _ in range(10):
+        for _ in range(100):
             if complete_google_login(show_error=False):
                 return
             await asyncio.sleep(0.2)
@@ -2382,6 +2379,10 @@ def main(page: ft.Page):
             new_message.disabled = True
             create_room_btn.disabled = True
             open_dialog(welcome_dlg)
+            if page.web and google_provider:
+                login_feedback.value = "A finalizar login Google..."
+                page.update()
+                asyncio.create_task(finalize_google_login_with_retry())
             return
 
         active_user_name = stored_user_name
