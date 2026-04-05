@@ -1502,29 +1502,25 @@ def main(page: ft.Page):
             page.update()
             return
 
-        login_feedback.value = "A abrir autenticação Google..."
+        platform_name = str(getattr(page, "platform", "") or "").lower()
+        width = float(page.width or 0)
+        use_mobile_redirect = (
+            "android" in platform_name
+            or "ios" in platform_name
+            or (bool(width) and width < MOBILE_LAYOUT_BREAKPOINT)
+        )
+
+        login_feedback.value = (
+            "A abrir autenticação Google..."
+            if use_mobile_redirect
+            else "A abrir popup de autenticação Google..."
+        )
         page.update()
-
-        async def open_auth_url(url: str):
-            await ft.UrlLauncher().launch_url(url, web_only_window_name="_self")
-
-        complete_page_html = """
-<!doctype html>
-<html>
-  <head><meta charset=\"utf-8\"></head>
-  <body style=\"font-family:sans-serif;text-align:center;padding-top:24px;\">
-    <p>Login concluído. A regressar à app...</p>
-    <script>window.location.replace('/');</script>
-  </body>
-</html>
-"""
 
         try:
             await page.login(
                 provider=google_provider,
-                redirect_to_page=False,
-                on_open_authorization_url=open_auth_url,
-                complete_page_html=complete_page_html,
+                redirect_to_page=use_mobile_redirect,
             )
         except Exception as ex:
             login_feedback.value = f"Erro ao abrir login: {ex}"
