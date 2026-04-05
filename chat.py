@@ -1500,26 +1500,13 @@ def main(page: ft.Page):
             redirect_url=GOOGLE_REDIRECT_URL,
         )
 
-    async def open_authorization_url_same_tab(url: str):
-        # Evita bloqueio de pop-up em alguns browsers abrindo a URL de autorização na mesma aba
-        await page.launch_url(url)
-
     async def google_login_click(_):
         if not google_provider:
             login_feedback.value = "Configura GOOGLE_* e usa /oauth_callback no GOOGLE_REDIRECT_URL."
             page.update()
             return
 
-        login_feedback.value = "A abrir o login..."
-        page.update()
-
-        if page.web:
-            await page.login(
-                provider=google_provider,
-                redirect_to_page=True,
-                on_open_authorization_url=open_authorization_url_same_tab,
-            )
-            return
+        login_feedback.value = ""
 
         await page.login(
             provider=google_provider,
@@ -2379,10 +2366,6 @@ def main(page: ft.Page):
             new_message.disabled = True
             create_room_btn.disabled = True
             open_dialog(welcome_dlg)
-            if page.web and google_provider:
-                login_feedback.value = "A finalizar login Google..."
-                page.update()
-                asyncio.create_task(finalize_google_login_with_retry())
             return
 
         active_user_name = stored_user_name
