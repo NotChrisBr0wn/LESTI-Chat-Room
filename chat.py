@@ -1580,10 +1580,8 @@ def main(page: ft.Page):
         login_feedback.value = "A abrir autenticação Google..."
         page.update()
 
-        def open_auth_url(url: str):
-            return asyncio.create_task(
-                ft.UrlLauncher().launch_url(url, web_only_window_name="_self")
-            )
+        async def open_auth_url(url: str):
+            await page.launch_url(url, web_popup_window_name=ft.UrlTarget.SELF)
 
         try:
             await page.login(
