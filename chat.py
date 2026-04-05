@@ -262,9 +262,9 @@ def main(page: ft.Page):
                 value = str(user.get(key) or "").strip()
                 if value:
                     return value
-
-            if value:
-                return value
+            user_id = str(getattr(user, "id", "") or "").strip()
+            if user_id:
+                return user_id
             return ""
 
         for attr in ("name", "email", "given_name", "preferred_username", "login", "username", "sub", "id"):
