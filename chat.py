@@ -1541,6 +1541,21 @@ def main(page: ft.Page):
         login_feedback.value = "Não foi possível fazer login."
         page.update()
 
+    async def recover_session_with_retry():
+        for _ in range(40):
+            if complete_google_login(show_error=False):
+                return
+            await asyncio.sleep(0.2)
+        login_feedback.value = ""
+        open_dialog(welcome_dlg)
+
+    def on_page_connect(_):
+        if not page.web or is_logged_in():
+            return
+        login_feedback.value = "A recuperar sessão..."
+        open_dialog(welcome_dlg)
+        page.run_task(recover_session_with_retry)
+
     def on_oauth_login(e):
         if getattr(e, "error", ""):
             login_feedback.value = f"Falha no login: {e.error}"
@@ -2136,6 +2151,7 @@ def main(page: ft.Page):
     file_picker = ft.FilePicker()
     page.services.append(file_picker)
     page.on_login = on_oauth_login
+    page.on_connect = on_page_connect
     page.update()
 
     create_room_btn = ft.FilledButton(
@@ -2385,6 +2401,11 @@ def main(page: ft.Page):
             active_user_name = ""
             new_message.disabled = True
             create_room_btn.disabled = True
+            if page.web:
+                login_feedback.value = "A recuperar sessão..."
+                open_dialog(welcome_dlg)
+                page.run_task(recover_session_with_retry)
+                return
             open_dialog(welcome_dlg)
             return
 
