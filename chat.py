@@ -1496,6 +1496,13 @@ def main(page: ft.Page):
             redirect_url=GOOGLE_REDIRECT_URL,
         )
 
+    def is_ios_web() -> bool:
+        user_agent = str(getattr(page, "client_user_agent", "") or "").lower()
+        return page.web and ("iphone" in user_agent or "ipad" in user_agent or "ipod" in user_agent)
+
+    async def open_authorization_url_same_tab(url: str):
+        await page.launch_url(url)
+
     async def google_login_click(_):
         if not google_provider:
             login_feedback.value = "Configura GOOGLE_* e usa /oauth_callback no GOOGLE_REDIRECT_URL."
@@ -1503,11 +1510,15 @@ def main(page: ft.Page):
             return
 
         login_feedback.value = ""
+        if is_ios_web():
+            await page.login(
+                provider=google_provider,
+                redirect_to_page=True,
+                on_open_authorization_url=open_authorization_url_same_tab,
+            )
+            return
 
-        await page.login(
-            provider=google_provider,
-            redirect_to_page=False,
-        )
+        await page.login(provider=google_provider, redirect_to_page=False)
 
     async def finalize_google_login_with_retry():
         for _ in range(100):
