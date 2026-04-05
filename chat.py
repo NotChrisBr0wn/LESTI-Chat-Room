@@ -1505,10 +1505,26 @@ def main(page: ft.Page):
         login_feedback.value = "A abrir autenticação Google..."
         page.update()
 
+        async def open_auth_url(url: str):
+            await ft.UrlLauncher().launch_url(url, web_only_window_name="_self")
+
+        complete_page_html = """
+<!doctype html>
+<html>
+  <head><meta charset=\"utf-8\"></head>
+  <body style=\"font-family:sans-serif;text-align:center;padding-top:24px;\">
+    <p>Login concluído. A regressar à app...</p>
+    <script>window.location.replace('/');</script>
+  </body>
+</html>
+"""
+
         try:
             await page.login(
                 provider=google_provider,
-                redirect_to_page=True,
+                redirect_to_page=False,
+                on_open_authorization_url=open_auth_url,
+                complete_page_html=complete_page_html,
             )
         except Exception as ex:
             login_feedback.value = f"Erro ao abrir login: {ex}"
