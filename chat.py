@@ -1509,17 +1509,54 @@ def main(page: ft.Page):
             page.update()
             return
 
+        width = float(page.width or 0)
+        is_mobile_web = bool(width and width < MOBILE_LAYOUT_BREAKPOINT)
+
+        if is_mobile_web:
+            login_feedback.value = "A abrir autenticação Google no telemóvel..."
+            page.update()
+
+            async def open_auth_url_mobile(url: str):
+                await page.launch_url(url, web_popup_window_name=ft.UrlTarget.SELF)
+
+            complete_page_html = """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Login concluído</title>
+</head>
+<body style="font-family: sans-serif; padding: 20px; text-align: center;">
+  <p>Login concluído. A regressar ao chat...</p>
+  <script>
+    setTimeout(function () {
+      window.location.replace("/");
+    }, 120);
+  </script>
+</body>
+</html>
+"""
+
+            try:
+                await page.login(
+                    provider=google_provider,
+                    redirect_to_page=False,
+                    on_open_authorization_url=open_auth_url_mobile,
+                    complete_page_html=complete_page_html,
+                )
+            except Exception as ex:
+                login_feedback.value = f"Erro ao abrir login mobile: {ex}"
+                page.update()
+            return
+
         login_feedback.value = "A abrir autenticação Google..."
         page.update()
-
-        async def open_auth_url(url: str):
-            await page.launch_url(url, web_popup_window_name=ft.UrlTarget.SELF)
 
         try:
             await page.login(
                 provider=google_provider,
-                redirect_to_page=True,
-                on_open_authorization_url=open_auth_url,
+                redirect_to_page=False,
             )
         except Exception as ex:
             login_feedback.value = f"Erro ao abrir login: {ex}"
