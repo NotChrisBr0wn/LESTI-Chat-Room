@@ -256,13 +256,13 @@ def main(page: ft.Page):
 
         user = getattr(auth, "user", None)
         if isinstance(user, dict):
-            for key in ("name", "email", "given_name"):
+            for key in ("name", "email", "given_name", "preferred_username", "login", "username", "sub", "id"):
                 value = str(user.get(key) or "").strip()
                 if value:
                     return value
             return ""
 
-        for attr in ("name", "email", "given_name"):
+        for attr in ("name", "email", "given_name", "preferred_username", "login", "username", "sub", "id"):
             value = str(getattr(user, attr, "") or "").strip()
             if value:
                 return value
@@ -275,6 +275,10 @@ def main(page: ft.Page):
         auth_name = auth_user_name()
         if auth_name:
             return auth_name
+
+        stored_user_name = page.session.store.get("user_name")
+        if isinstance(stored_user_name, str) and stored_user_name.strip():
+            return stored_user_name.strip()
         return ""
 
     def is_logged_in() -> bool:
