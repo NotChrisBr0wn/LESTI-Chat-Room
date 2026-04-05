@@ -1502,25 +1502,13 @@ def main(page: ft.Page):
             page.update()
             return
 
-        platform_name = str(getattr(page, "platform", "") or "").lower()
-        width = float(page.width or 0)
-        use_mobile_redirect = (
-            "android" in platform_name
-            or "ios" in platform_name
-            or (bool(width) and width < MOBILE_LAYOUT_BREAKPOINT)
-        )
-
-        login_feedback.value = (
-            "A abrir autenticação Google..."
-            if use_mobile_redirect
-            else "A abrir popup de autenticação Google..."
-        )
+        login_feedback.value = "A abrir autenticação Google..."
         page.update()
 
         try:
             await page.login(
                 provider=google_provider,
-                redirect_to_page=use_mobile_redirect,
+                redirect_to_page=True,
             )
         except Exception as ex:
             login_feedback.value = f"Erro ao abrir login: {ex}"
@@ -2397,7 +2385,14 @@ def main(page: ft.Page):
         ensured_room = verify_room(stored_room_name)
         switch_room(ensured_room)
 
+    async def reconcile_auth_state_with_retry():
+        for _ in range(100):
+            if complete_google_login(show_error=False):
+                return
+            await asyncio.sleep(0.2)
+
     bootstrap_session_state()
+    asyncio.create_task(reconcile_auth_state_with_retry())
 
     panel_glass_bg, nested_glass_bg = get_glass_colors()
 
