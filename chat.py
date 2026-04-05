@@ -1496,6 +1496,17 @@ def main(page: ft.Page):
             redirect_url=GOOGLE_REDIRECT_URL,
         )
 
+    def should_use_redirect_oauth() -> bool:
+        platform_name = str(getattr(page, "platform", "") or "").lower()
+        is_native_mobile = "android" in platform_name or "ios" in platform_name
+        width = float(page.width or 0)
+        is_mobile_layout = (
+            current_layout_mode == "mobile"
+            or (bool(width) and width < MOBILE_LAYOUT_BREAKPOINT)
+            or width == 0
+        )
+        return is_native_mobile or is_mobile_layout
+
     async def google_login_click(_):
         if not google_provider:
             login_feedback.value = "Configura GOOGLE_* e usa /oauth_callback no GOOGLE_REDIRECT_URL."
@@ -1503,10 +1514,23 @@ def main(page: ft.Page):
             return
 
         login_feedback.value = ""
+        use_redirect = should_use_redirect_oauth()
 
         try:
-            await page.login(provider=google_provider, redirect_to_page=False)
+            await page.login(provider=google_provider, redirect_to_page=use_redirect)
         except Exception as ex:
+            # Fallback para page redirect se o popup for bloqueado ou em layouts móveis onde o popup pode não funcionar bem
+            if not use_redirect:
+                try:
+                    login_feedback.value = "Popup bloqueado. A redirecionar para login Google..."
+                    page.update()
+                    await page.login(provider=google_provider, redirect_to_page=True)
+                    return
+                except Exception as redirect_ex:
+                    login_feedback.value = f"Erro ao abrir login: {redirect_ex}"
+                    page.update()
+                    return
+
             login_feedback.value = f"Erro ao abrir login: {ex}"
             page.update()
 
