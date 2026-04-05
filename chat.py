@@ -2461,7 +2461,7 @@ def main(page: ft.Page):
             active_user_name = ""
             new_message.disabled = True
             create_room_btn.disabled = True
-            open_dialog(welcome_dlg)
+            welcome_dlg.open = False
             return
 
         active_user_name = stored_user_name
@@ -2494,6 +2494,10 @@ def main(page: ft.Page):
             new_message.disabled = False
             create_room_btn.disabled = False
             page.update()
+            return
+
+        login_feedback.value = "Sessão não encontrada após autenticação. Tenta novamente."
+        open_dialog(welcome_dlg)
     bootstrap_session_state()
     asyncio.create_task(reconcile_auth_state_with_retry())
 
