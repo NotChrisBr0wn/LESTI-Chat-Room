@@ -1518,10 +1518,14 @@ def main(page: ft.Page):
         login_feedback.value = "A abrir o login..."
         page.update()
 
-        if getattr(getattr(page, "platform", None), "is_mobile", False):
+        if page.web:
             await page.login(
                 provider=google_provider,
                 redirect_to_page=True,
+                on_open_authorization_url=lambda url: page.launch_url(
+                    url,
+                    web_popup_window_name="_self",
+                ),
             )
             return
 
