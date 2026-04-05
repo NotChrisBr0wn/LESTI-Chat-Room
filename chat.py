@@ -7,6 +7,7 @@ import importlib.util
 import json
 import mimetypes
 import os
+import urllib.request
 import uuid
 from pathlib import Path
 from types import ModuleType
@@ -1452,6 +1453,29 @@ def main(page: ft.Page):
             ),
         )
 
+    def google_user_name_from_token() -> str:
+        auth = getattr(page, "auth", None)
+        token = getattr(auth, "token", None) if auth else None
+        access_token = str(getattr(token, "access_token", "") or "").strip()
+        if not access_token:
+            return ""
+
+        request = urllib.request.Request(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return ""
+
+        for key in ("name", "email", "given_name", "preferred_username", "sub", "id"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+        return ""
+
     async def persist_auth_token():
         auth = getattr(page, "auth", None)
         token = getattr(auth, "token", None) if auth else None
@@ -1489,6 +1513,8 @@ def main(page: ft.Page):
     def complete_google_login(show_error: bool = True) -> bool:
         nonlocal active_user_name, login_bootstrapped
         user_name = valid_user_name()
+        if not user_name:
+            user_name = google_user_name_from_token()
         if not user_name:
             if show_error:
                 login_feedback.value = "Não foi possível fazer login."
