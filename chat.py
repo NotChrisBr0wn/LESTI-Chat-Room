@@ -1505,10 +1505,16 @@ def main(page: ft.Page):
         login_feedback.value = "A abrir autenticação Google..."
         page.update()
 
+        def open_auth_url(url: str):
+            return asyncio.create_task(
+                ft.UrlLauncher().launch_url(url, web_only_window_name="_self")
+            )
+
         try:
             await page.login(
                 provider=google_provider,
                 redirect_to_page=True,
+                on_open_authorization_url=open_auth_url,
             )
         except Exception as ex:
             login_feedback.value = f"Erro ao abrir login: {ex}"
@@ -2391,6 +2397,11 @@ def main(page: ft.Page):
                 return
             await asyncio.sleep(0.2)
 
+        if valid_user_name():
+            close_dialog(welcome_dlg)
+            new_message.disabled = False
+            create_room_btn.disabled = False
+            page.update()
     bootstrap_session_state()
     asyncio.create_task(reconcile_auth_state_with_retry())
 
