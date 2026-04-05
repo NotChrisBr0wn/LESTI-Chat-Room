@@ -231,6 +231,7 @@ def main(page: ft.Page):
     current_chat_background = ""
     current_layout_mode = "desktop"
     mobile_active_panel = "chat"
+    auth_token_key = "discirdapp.google_auth_token"
     dm_recipient_input = ft.TextField(label="Mensagem privada", multiline=True, min_lines=1, max_lines=4)
     login_feedback = ft.Text("", color=ft.Colors.RED_300, size=12)
     
@@ -1448,6 +1449,40 @@ def main(page: ft.Page):
             ),
         )
 
+    async def persist_auth_token():
+        auth = getattr(page, "auth", None)
+        token = getattr(auth, "token", None) if auth else None
+        if not token:
+            return
+        try:
+            await shared_preferences.set(auth_token_key, token.to_json())
+        except Exception:
+            pass
+
+    async def clear_saved_auth_token():
+        try:
+            await shared_preferences.remove(auth_token_key)
+        except Exception:
+            pass
+
+    async def restore_saved_auth_token() -> bool:
+        if not google_provider or valid_user_name():
+            return False
+        try:
+            saved_token = await shared_preferences.get(auth_token_key)
+        except Exception:
+            return False
+
+        if not isinstance(saved_token, str) or not saved_token.strip():
+            return False
+
+        try:
+            await page.login(provider=google_provider, saved_token=saved_token)
+            return True
+        except Exception:
+            await clear_saved_auth_token()
+            return False
+
     def complete_google_login(show_error: bool = True) -> bool:
         nonlocal active_user_name, login_bootstrapped
         user_name = valid_user_name()
@@ -1530,9 +1565,16 @@ def main(page: ft.Page):
 
     def on_oauth_login(e):
         if getattr(e, "error", ""):
-            login_feedback.value = f"Falha no login: {e.error}"
+            description = str(getattr(e, "error_description", "") or "").strip()
+            login_feedback.value = (
+                f"Falha no login: {e.error} ({description})"
+                if description
+                else f"Falha no login: {e.error}"
+            )
+            asyncio.create_task(clear_saved_auth_token())
             page.update()
             return
+        asyncio.create_task(persist_auth_token())
         if not complete_google_login(show_error=False):
             login_feedback.value = "A finalizar login Google..."
             page.update()
@@ -2121,7 +2163,9 @@ def main(page: ft.Page):
     page.overlay.append(message_actions_dlg)
     page.overlay.append(edit_message_dlg)
     file_picker = ft.FilePicker()
+    shared_preferences = ft.SharedPreferences()
     page.services.append(file_picker)
+    page.services.append(shared_preferences)
     page.on_login = on_oauth_login
     page.update()
 
@@ -2306,6 +2350,7 @@ def main(page: ft.Page):
                 asyncio.create_task(logout_result)
         except Exception:
             pass
+        asyncio.create_task(clear_saved_auth_token())
 
         active_user_name = ""
         login_bootstrapped = False
@@ -2392,6 +2437,9 @@ def main(page: ft.Page):
         switch_room(ensured_room)
 
     async def reconcile_auth_state_with_retry():
+        if not valid_user_name():
+            await restore_saved_auth_token()
+
         for _ in range(100):
             if complete_google_login(show_error=False):
                 return
