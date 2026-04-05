@@ -280,10 +280,19 @@ def main(page: ft.Page):
         auth_name = auth_user_name()
         if auth_name:
             return auth_name
+
+        stored_user_name = page.session.store.get("user_name")
+        if isinstance(stored_user_name, str) and stored_user_name.strip():
+            return stored_user_name.strip()
         return ""
 
+    def has_active_auth_token() -> bool:
+        auth = getattr(page, "auth", None)
+        token = getattr(auth, "token", None) if auth else None
+        return bool(str(getattr(token, "access_token", "") or "").strip())
+
     def is_logged_in() -> bool:
-        return bool(valid_user_name())
+        return bool(valid_user_name()) or has_active_auth_token()
     
     # Normaliza o nome da sala para garantir consistência (removendo espaços e convertendo em minusculas)
     def normalize_room_name(value: str) -> str:
@@ -1515,6 +1524,8 @@ def main(page: ft.Page):
         user_name = valid_user_name()
         if not user_name:
             user_name = google_user_name_from_token()
+        if not user_name and has_active_auth_token():
+            user_name = str(page.session.store.get("user_name") or "GoogleUser").strip() or "GoogleUser"
         if not user_name:
             if show_error:
                 login_feedback.value = "Não foi possível fazer login."
@@ -2463,6 +2474,10 @@ def main(page: ft.Page):
     def bootstrap_session_state():
         nonlocal active_user_name
         stored_user_name = valid_user_name()
+        if not stored_user_name and has_active_auth_token():
+            if complete_google_login(show_error=False):
+                return
+
         if not stored_user_name:
             active_user_name = ""
             new_message.disabled = True
