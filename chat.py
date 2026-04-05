@@ -1496,12 +1496,7 @@ def main(page: ft.Page):
             redirect_url=GOOGLE_REDIRECT_URL,
         )
 
-    def should_use_redirect_oauth() -> bool:
-        # In WEB_BROWSER deployments, full-page redirect is the most reliable
-        # approach across desktop and mobile browsers.
-        return True
-
-    async def start_google_login():
+    async def google_login_click(_):
         if not google_provider:
             login_feedback.value = "Configura GOOGLE_* e usa /oauth_callback no GOOGLE_REDIRECT_URL."
             page.update()
@@ -1509,28 +1504,19 @@ def main(page: ft.Page):
 
         login_feedback.value = "A abrir autenticação Google..."
         page.update()
-        use_redirect = should_use_redirect_oauth()
+
+        async def open_auth_url(url: str):
+            await ft.UrlLauncher().launch_url(url, web_only_window_name="_self")
 
         try:
-            await page.login(provider=google_provider, redirect_to_page=use_redirect)
+            await page.login(
+                provider=google_provider,
+                redirect_to_page=False,
+                on_open_authorization_url=open_auth_url,
+            )
         except Exception as ex:
-            # Fallback para page redirect se o popup for bloqueado ou em layouts móveis onde o popup pode não funcionar bem
-            if not use_redirect:
-                try:
-                    login_feedback.value = "Popup bloqueado. A redirecionar para login Google..."
-                    page.update()
-                    await page.login(provider=google_provider, redirect_to_page=True)
-                    return
-                except Exception as redirect_ex:
-                    login_feedback.value = f"Erro ao abrir login: {redirect_ex}"
-                    page.update()
-                    return
-
             login_feedback.value = f"Erro ao abrir login: {ex}"
             page.update()
-
-    def google_login_click(_):
-        asyncio.create_task(start_google_login())
 
     async def finalize_google_login_with_retry():
         for _ in range(100):
