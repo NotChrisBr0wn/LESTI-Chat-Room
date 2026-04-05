@@ -1566,10 +1566,31 @@ def main(page: ft.Page):
             page.update()
             return
 
+        width = float(page.width or 0)
+        is_mobile_web = bool(width and width < MOBILE_LAYOUT_BREAKPOINT)
+
+        if is_mobile_web:
+            login_feedback.value = "A abrir autenticação Google..."
+            page.update()
+
+            async def open_auth_url_mobile(url: str):
+                await ft.UrlLauncher().launch_url(url, web_only_window_name="_self")
+
+            try:
+                await page.login(
+                    provider=google_provider,
+                    redirect_to_page=True,
+                    on_open_authorization_url=open_auth_url_mobile,
+                )
+            except Exception as ex:
+                login_feedback.value = f"Erro ao abrir login mobile: {ex}"
+                page.update()
+            return
+
         login_feedback.value = "A abrir autenticação Google num novo separador..."
         page.update()
 
-        def open_auth_url(url: str):
+        def open_auth_url_desktop(url: str):
             return asyncio.create_task(
                 ft.UrlLauncher().launch_url(url, web_only_window_name="_blank")
             )
@@ -1578,10 +1599,10 @@ def main(page: ft.Page):
             await page.login(
                 provider=google_provider,
                 redirect_to_page=False,
-                on_open_authorization_url=open_auth_url,
+                on_open_authorization_url=open_auth_url_desktop,
             )
         except Exception as ex:
-            login_feedback.value = f"Erro ao abrir login: {ex}"
+            login_feedback.value = f"Erro ao abrir login desktop: {ex}"
             page.update()
 
     async def finalize_google_login_with_retry():
