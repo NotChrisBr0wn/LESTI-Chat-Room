@@ -7,7 +7,6 @@ import importlib.util
 import json
 import mimetypes
 import os
-import urllib.request
 import uuid
 from pathlib import Path
 from types import ModuleType
@@ -232,7 +231,6 @@ def main(page: ft.Page):
     current_chat_background = ""
     current_layout_mode = "desktop"
     mobile_active_panel = "chat"
-    auth_token_key = "discirdapp.google_auth_token"
     dm_recipient_input = ft.TextField(label="Mensagem privada", multiline=True, min_lines=1, max_lines=4)
     login_feedback = ft.Text("", color=ft.Colors.RED_300, size=12)
     
@@ -286,13 +284,8 @@ def main(page: ft.Page):
             return stored_user_name.strip()
         return ""
 
-    def has_active_auth_token() -> bool:
-        auth = getattr(page, "auth", None)
-        token = getattr(auth, "token", None) if auth else None
-        return bool(str(getattr(token, "access_token", "") or "").strip())
-
     def is_logged_in() -> bool:
-        return bool(valid_user_name()) or has_active_auth_token()
+        return bool(valid_user_name())
     
     # Normaliza o nome da sala para garantir consistência (removendo espaços e convertendo em minusculas)
     def normalize_room_name(value: str) -> str:
@@ -1462,70 +1455,9 @@ def main(page: ft.Page):
             ),
         )
 
-    def google_user_name_from_token() -> str:
-        auth = getattr(page, "auth", None)
-        token = getattr(auth, "token", None) if auth else None
-        access_token = str(getattr(token, "access_token", "") or "").strip()
-        if not access_token:
-            return ""
-
-        request = urllib.request.Request(
-            "https://www.googleapis.com/oauth2/v3/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=5) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except Exception:
-            return ""
-
-        for key in ("name", "email", "given_name", "preferred_username", "sub", "id"):
-            value = str(payload.get(key) or "").strip()
-            if value:
-                return value
-        return ""
-
-    async def persist_auth_token():
-        auth = getattr(page, "auth", None)
-        token = getattr(auth, "token", None) if auth else None
-        if not token:
-            return
-        try:
-            await shared_preferences.set(auth_token_key, token.to_json())
-        except Exception:
-            pass
-
-    async def clear_saved_auth_token():
-        try:
-            await shared_preferences.remove(auth_token_key)
-        except Exception:
-            pass
-
-    async def restore_saved_auth_token() -> bool:
-        if not google_provider or valid_user_name():
-            return False
-        try:
-            saved_token = await shared_preferences.get(auth_token_key)
-        except Exception:
-            return False
-
-        if not isinstance(saved_token, str) or not saved_token.strip():
-            return False
-
-        try:
-            await page.login(provider=google_provider, saved_token=saved_token)
-            return True
-        except Exception:
-            await clear_saved_auth_token()
-            return False
-
     def complete_google_login(show_error: bool = True) -> bool:
         nonlocal active_user_name, login_bootstrapped
         user_name = valid_user_name()
-        if not user_name:
-            user_name = google_user_name_from_token()
-        if not user_name and has_active_auth_token():
-            user_name = str(page.session.store.get("user_name") or "GoogleUser").strip() or "GoogleUser"
         if not user_name:
             if show_error:
                 login_feedback.value = "Não foi possível fazer login."
@@ -1609,10 +1541,8 @@ def main(page: ft.Page):
                 if description
                 else f"Falha no login: {e.error}"
             )
-            asyncio.create_task(clear_saved_auth_token())
             page.update()
             return
-        asyncio.create_task(persist_auth_token())
         if not complete_google_login(show_error=False):
             login_feedback.value = "A finalizar login Google..."
             page.update()
@@ -2201,9 +2131,7 @@ def main(page: ft.Page):
     page.overlay.append(message_actions_dlg)
     page.overlay.append(edit_message_dlg)
     file_picker = ft.FilePicker()
-    shared_preferences = ft.SharedPreferences()
     page.services.append(file_picker)
-    page.services.append(shared_preferences)
     page.on_login = on_oauth_login
     page.update()
 
@@ -2388,7 +2316,6 @@ def main(page: ft.Page):
                 asyncio.create_task(logout_result)
         except Exception:
             pass
-        asyncio.create_task(clear_saved_auth_token())
 
         active_user_name = ""
         login_bootstrapped = False
@@ -2477,20 +2404,18 @@ def main(page: ft.Page):
         ensured_room = verify_room(stored_room_name)
         switch_room(ensured_room)
 
-    async def restore_or_prompt_login():
-        restored = await restore_saved_auth_token()
-        if restored:
-            for _ in range(25):
-                if complete_google_login(show_error=False):
-                    return
-                await asyncio.sleep(0.2)
+    async def startup_auth_gate():
+        for _ in range(15):
+            if complete_google_login(show_error=False):
+                return
+            await asyncio.sleep(0.2)
 
         if not is_logged_in():
             login_feedback.value = ""
             open_dialog(welcome_dlg)
 
     bootstrap_session_state()
-    asyncio.create_task(restore_or_prompt_login())
+    asyncio.create_task(startup_auth_gate())
 
     panel_glass_bg, nested_glass_bg = get_glass_colors()
 
