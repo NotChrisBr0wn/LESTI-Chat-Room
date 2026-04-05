@@ -1496,6 +1496,13 @@ def main(page: ft.Page):
             redirect_url=GOOGLE_REDIRECT_URL,
         )
 
+    async def open_authorization_url_same_tab(url: str):
+        await page.launch_url(
+            url,
+            web_popup_window=True,
+            web_popup_window_name=ft.UrlTarget.SELF,
+        )
+
     async def google_login_click(_):
         if not google_provider:
             login_feedback.value = "Configura GOOGLE_* e usa /oauth_callback no GOOGLE_REDIRECT_URL."
@@ -1506,7 +1513,11 @@ def main(page: ft.Page):
         page.update()
 
         if page.web:
-            await page.login(provider=google_provider, redirect_to_page=True)
+            await page.login(
+                provider=google_provider,
+                redirect_to_page=True,
+                on_open_authorization_url=open_authorization_url_same_tab,
+            )
             return
 
         await page.login(
