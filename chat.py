@@ -39,11 +39,7 @@ if env_file.exists():
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
-_GOOGLE_REDIRECT_URL_RAW = os.getenv("GOOGLE_REDIRECT_URL", "").strip()
-if _GOOGLE_REDIRECT_URL_RAW and not _GOOGLE_REDIRECT_URL_RAW.rstrip("/").endswith("/oauth_callback"):
-    GOOGLE_REDIRECT_URL = _GOOGLE_REDIRECT_URL_RAW.rstrip("/") + "/oauth_callback"
-else:
-    GOOGLE_REDIRECT_URL = _GOOGLE_REDIRECT_URL_RAW
+GOOGLE_REDIRECT_URL = os.getenv("GOOGLE_REDIRECT_URL", "").strip()
 
 HISTORY_FILE = Path(__file__).resolve().with_name("chat_history.json")
 HISTORY_DB_FILE = Path(__file__).resolve().with_name("chat_history.duckdb")
