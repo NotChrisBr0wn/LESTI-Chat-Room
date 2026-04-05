@@ -24,19 +24,6 @@ from flet.auth.providers import GoogleOAuthProvider
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
 
-env_file = Path(__file__).resolve().with_name("auth.env")
-if env_file.exists():
-    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
-
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
 GOOGLE_REDIRECT_URL = os.getenv("GOOGLE_REDIRECT_URL", "").strip()
