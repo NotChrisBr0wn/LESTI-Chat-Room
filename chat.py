@@ -275,10 +275,6 @@ def main(page: ft.Page):
         auth_name = auth_user_name()
         if auth_name:
             return auth_name
-
-        stored_user_name = page.session.store.get("user_name")
-        if isinstance(stored_user_name, str) and stored_user_name.strip():
-            return stored_user_name.strip()
         return ""
 
     def is_logged_in() -> bool:
@@ -2363,6 +2359,7 @@ def main(page: ft.Page):
         stored_user_name = valid_user_name()
         if not stored_user_name:
             active_user_name = ""
+            page.session.store.set("user_name", "")
             new_message.disabled = True
             create_room_btn.disabled = True
             open_dialog(welcome_dlg)
