@@ -23,6 +23,7 @@ from flet.auth.providers import GoogleOAuthProvider
 # Limites para anexos (20MB total, 5MB para imagens inline)
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+AUTH_TOKEN_STORAGE_KEY = "discirdapp.google_auth_token"
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
@@ -1488,6 +1489,39 @@ def main(page: ft.Page):
         page.update()
         return True
 
+    async def save_auth_token():
+        auth = getattr(page, "auth", None)
+        token = getattr(auth, "token", None) if auth else None
+        if not token:
+            return
+
+        try:
+            await page.shared_preferences.set(AUTH_TOKEN_STORAGE_KEY, token.to_json())
+        except Exception:
+            # If storage is unavailable, keep runtime login flow working.
+            pass
+
+    async def restore_auth_token_if_available():
+        if not google_provider:
+            return
+
+        try:
+            saved = await page.shared_preferences.get(AUTH_TOKEN_STORAGE_KEY)
+        except Exception:
+            return
+
+        if isinstance(saved, str) and saved.strip():
+            try:
+                await page.login(provider=google_provider, saved_token=saved.strip())
+            except Exception:
+                pass
+
+    async def clear_saved_auth_token():
+        try:
+            await page.shared_preferences.remove(AUTH_TOKEN_STORAGE_KEY)
+        except Exception:
+            pass
+
     google_provider = None
     if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URL:
         google_provider = GoogleOAuthProvider(
@@ -1536,14 +1570,17 @@ def main(page: ft.Page):
     async def finalize_google_login_with_retry():
         for _ in range(100):
             if complete_google_login(show_error=False):
+                page.run_task(save_auth_token)
                 return
             await asyncio.sleep(0.2)
         login_feedback.value = "Não foi possível fazer login."
         page.update()
 
     async def recover_session_with_retry():
+        await restore_auth_token_if_available()
         for _ in range(40):
             if complete_google_login(show_error=False):
+                page.run_task(save_auth_token)
                 return
             await asyncio.sleep(0.2)
         login_feedback.value = ""
@@ -1565,6 +1602,8 @@ def main(page: ft.Page):
             login_feedback.value = "A finalizar login Google..."
             page.update()
             asyncio.create_task(finalize_google_login_with_retry())
+            return
+        page.run_task(save_auth_token)
 
     def create_room_click(e):
         if not is_logged_in():
@@ -2340,6 +2379,7 @@ def main(page: ft.Page):
         login_bootstrapped = False
         selected_dm_user = ""
         page.session.store.set("user_name", "")
+        page.run_task(clear_saved_auth_token)
         new_message.value = ""
         new_message.disabled = True
         create_room_btn.disabled = True
