@@ -1596,7 +1596,7 @@ def main(page: ft.Page):
             page.update()
 
     async def finalize_google_login_with_retry():
-        for _ in range(100):
+        for _ in range(25):
             if complete_google_login(show_error=False):
                 return
             await asyncio.sleep(0.2)
@@ -2452,11 +2452,10 @@ def main(page: ft.Page):
 
     def bootstrap_session_state():
         nonlocal active_user_name
-        stored_user_name = valid_user_name()
-        if not stored_user_name and has_active_auth_token():
-            if complete_google_login(show_error=False):
-                return
+        if complete_google_login(show_error=False):
+            return
 
+        stored_user_name = valid_user_name()
         if not stored_user_name:
             active_user_name = ""
             new_message.disabled = True
@@ -2480,26 +2479,20 @@ def main(page: ft.Page):
         ensured_room = verify_room(stored_room_name)
         switch_room(ensured_room)
 
-    async def reconcile_auth_state_with_retry():
-        if not valid_user_name():
-            await restore_saved_auth_token()
+    async def restore_or_prompt_login():
+        restored = await restore_saved_auth_token()
+        if restored:
+            for _ in range(25):
+                if complete_google_login(show_error=False):
+                    return
+                await asyncio.sleep(0.2)
 
-        for _ in range(100):
-            if complete_google_login(show_error=False):
-                return
-            await asyncio.sleep(0.2)
+        if not is_logged_in():
+            login_feedback.value = ""
+            open_dialog(welcome_dlg)
 
-        if valid_user_name():
-            close_dialog(welcome_dlg)
-            new_message.disabled = False
-            create_room_btn.disabled = False
-            page.update()
-            return
-
-        login_feedback.value = "Sessão não encontrada após autenticação. Tenta novamente."
-        open_dialog(welcome_dlg)
     bootstrap_session_state()
-    asyncio.create_task(reconcile_auth_state_with_retry())
+    asyncio.create_task(restore_or_prompt_login())
 
     panel_glass_bg, nested_glass_bg = get_glass_colors()
 
