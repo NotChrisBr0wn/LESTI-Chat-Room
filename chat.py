@@ -1566,18 +1566,18 @@ def main(page: ft.Page):
             page.update()
             return
 
-        login_feedback.value = "A abrir autenticação Google..."
+        login_feedback.value = "A abrir autenticação Google num novo separador..."
         page.update()
 
         def open_auth_url(url: str):
             return asyncio.create_task(
-                ft.UrlLauncher().launch_url(url, web_only_window_name="_self")
+                ft.UrlLauncher().launch_url(url, web_only_window_name="_blank")
             )
 
         try:
             await page.login(
                 provider=google_provider,
-                redirect_to_page=True,
+                redirect_to_page=False,
                 on_open_authorization_url=open_auth_url,
             )
         except Exception as ex:
