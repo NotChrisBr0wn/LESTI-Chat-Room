@@ -2610,6 +2610,7 @@ def main(page: ft.Page):
 if __name__ == "__main__":
     host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "60123"))
+    os.environ.setdefault("FLET_SESSION_TIMEOUT", "86400")
 
     # For cloud deploys (Fly.io/Replit), set HOST=0.0.0.0 and PORT via env.
     ft.run(
