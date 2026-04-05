@@ -1515,7 +1515,16 @@ def main(page: ft.Page):
             page.update()
             return
 
-        login_feedback.value = ""
+        login_feedback.value = "A abrir o login..."
+        page.update()
+
+        if getattr(getattr(page, "platform", None), "is_mobile", False):
+            await page.login(
+                provider=google_provider,
+                redirect_to_page=True,
+            )
+            return
+
         await page.login(
             provider=google_provider,
             redirect_to_page=False,
