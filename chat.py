@@ -231,6 +231,7 @@ def main(page: ft.Page):
     current_chat_background = ""
     current_layout_mode = "desktop"
     mobile_active_panel = "chat"
+    auth_user_key = "discirdapp.auth_user_name"
     dm_recipient_input = ft.TextField(label="Mensagem privada", multiline=True, min_lines=1, max_lines=4)
     login_feedback = ft.Text("", color=ft.Colors.RED_300, size=12)
     
@@ -1455,6 +1456,30 @@ def main(page: ft.Page):
             ),
         )
 
+    async def persist_auth_user_name(user_name: str):
+        normalized = str(user_name or "").strip()
+        if not normalized:
+            return
+        try:
+            await shared_preferences.set(auth_user_key, normalized)
+        except Exception:
+            pass
+
+    async def clear_auth_user_name():
+        try:
+            await shared_preferences.remove(auth_user_key)
+        except Exception:
+            pass
+
+    async def restore_auth_user_name() -> str:
+        try:
+            value = await shared_preferences.get(auth_user_key)
+        except Exception:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return ""
+
     def complete_google_login(show_error: bool = True) -> bool:
         nonlocal active_user_name, login_bootstrapped
         user_name = valid_user_name()
@@ -1471,6 +1496,7 @@ def main(page: ft.Page):
         login_feedback.value = ""
         active_user_name = user_name
         page.session.store.set("user_name", user_name)
+        asyncio.create_task(persist_auth_user_name(user_name))
         close_dialog(welcome_dlg)
 
         topic_subscription()
@@ -1516,16 +1542,32 @@ def main(page: ft.Page):
             login_feedback.value = "A abrir autenticação Google no telemóvel..."
             page.update()
 
-            def open_auth_url_mobile(url: str):
-                return asyncio.create_task(
-                    page.launch_url(url, web_popup_window_name=ft.UrlTarget.SELF)
-                )
+            async def open_auth_url_mobile(url: str):
+                await ft.UrlLauncher().launch_url(url, web_only_window_name="_self")
+
+            complete_page_html = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>Login concluído</title>
+</head>
+<body style=\"font-family:sans-serif;padding:20px;text-align:center;\">
+    <p>Login concluído. A regressar ao chat...</p>
+    <script>
+        window.location.replace('/');
+    </script>
+</body>
+</html>
+"""
 
             try:
                 await page.login(
                     provider=google_provider,
-                    redirect_to_page=True,
+                    redirect_to_page=False,
                     on_open_authorization_url=open_auth_url_mobile,
+                    complete_page_html=complete_page_html,
                 )
             except Exception as ex:
                 login_feedback.value = f"Erro ao abrir login mobile: {ex}"
@@ -2150,7 +2192,9 @@ def main(page: ft.Page):
     page.overlay.append(message_actions_dlg)
     page.overlay.append(edit_message_dlg)
     file_picker = ft.FilePicker()
+    shared_preferences = ft.SharedPreferences()
     page.services.append(file_picker)
+    page.services.append(shared_preferences)
     page.on_login = on_oauth_login
     page.update()
 
@@ -2335,6 +2379,7 @@ def main(page: ft.Page):
                 asyncio.create_task(logout_result)
         except Exception:
             pass
+        asyncio.create_task(clear_auth_user_name())
 
         active_user_name = ""
         login_bootstrapped = False
@@ -2424,6 +2469,12 @@ def main(page: ft.Page):
         switch_room(ensured_room)
 
     async def startup_auth_gate():
+        if not valid_user_name():
+            restored_user_name = await restore_auth_user_name()
+            if restored_user_name:
+                active_user_name = restored_user_name
+                page.session.store.set("user_name", restored_user_name)
+
         for _ in range(15):
             if complete_google_login(show_error=False):
                 return
