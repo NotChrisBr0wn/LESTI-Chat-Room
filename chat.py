@@ -1497,23 +1497,18 @@ def main(page: ft.Page):
         )
 
     def should_use_redirect_oauth() -> bool:
-        platform_name = str(getattr(page, "platform", "") or "").lower()
-        is_native_mobile = "android" in platform_name or "ios" in platform_name
-        width = float(page.width or 0)
-        is_mobile_layout = (
-            current_layout_mode == "mobile"
-            or (bool(width) and width < MOBILE_LAYOUT_BREAKPOINT)
-            or width == 0
-        )
-        return is_native_mobile or is_mobile_layout
+        # In WEB_BROWSER deployments, full-page redirect is the most reliable
+        # approach across desktop and mobile browsers.
+        return True
 
-    async def google_login_click(_):
+    async def start_google_login():
         if not google_provider:
             login_feedback.value = "Configura GOOGLE_* e usa /oauth_callback no GOOGLE_REDIRECT_URL."
             page.update()
             return
 
-        login_feedback.value = ""
+        login_feedback.value = "A abrir autenticação Google..."
+        page.update()
         use_redirect = should_use_redirect_oauth()
 
         try:
@@ -1533,6 +1528,9 @@ def main(page: ft.Page):
 
             login_feedback.value = f"Erro ao abrir login: {ex}"
             page.update()
+
+    def google_login_click(_):
+        asyncio.create_task(start_google_login())
 
     async def finalize_google_login_with_retry():
         for _ in range(100):
